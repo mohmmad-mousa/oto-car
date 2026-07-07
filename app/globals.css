@@ -24,3 +24,48 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@keyframes city-loader-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes city-loader-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+
+.city-loader-glow {
+  animation: city-loader-pulse 4s ease-in-out infinite;
+}
+
+.city-loader-glow-delayed {
+  animation-delay: 1.6s;
+}
+
+.city-loader-dot {
+  animation: city-loader-dot 1.4s ease-in-out infinite;
+}
+
+.city-loader-dot-delay-1 {
+  animation-delay: 0.2s;
+}
+
+.city-loader-dot-delay-2 {
+  animation-delay: 0.4s;
+}
