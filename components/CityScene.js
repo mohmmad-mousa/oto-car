@@ -49,6 +49,248 @@ const CITY_SHADOW_MAP_SIZE = 2048;
 const FOCUS_SHADOW_MAP_SIZE = 1024;
 const MAX_TEXTURE_ANISOTROPY = 4;
 
+const PERF_LOG_ENABLED = true;
+
+    function analyzeScenePerformance(root, animations = [], label = "Model") {
+      if (!PERF_LOG_ENABLED || typeof console === "undefined") return null;
+
+      let meshes = 0;
+      let skinnedMeshes = 0;
+      let points = 0;
+      let lines = 0;
+      let triangles = 0;
+      let vertices = 0;
+      let materials = 0;
+      let textures = 0;
+      let shadowCasters = 0;
+      let shadowReceivers = 0;
+      let morphTargets = 0;
+      const materialTypes = {};
+      const textureSizes = [];
+      const heaviestMeshes = [];
+      const uniqueMaterials = new Set();
+      const uniqueTextures = new Set();
+
+      root.updateMatrixWorld(true);
+      root.traverse((child) => {
+        if (child.isSkinnedMesh) skinnedMeshes += 1;
+        if (child.isPoints) points += 1;
+        if (child.isLine || child.isLineSegments) lines += 1;
+        if (!child.isMesh) return;
+
+        meshes += 1;
+        if (child.castShadow) shadowCasters += 1;
+        if (child.receiveShadow) shadowReceivers += 1;
+
+        const geom = child.geometry;
+        let meshTriangles = 0;
+        let meshVertices = 0;
+        if (geom) {
+          const indexed = geom.index?.count ?? 0;
+          const positionCount = geom.attributes.position?.count ?? 0;
+          meshVertices = positionCount;
+          meshTriangles = indexed > 0 ? indexed / 3 : positionCount / 3;
+          triangles += meshTriangles;
+          vertices += meshVertices;
+
+          if (geom.morphAttributes?.position?.length) {
+            morphTargets += geom.morphAttributes.position.length;
+          }
+        }
+
+        heaviestMeshes.push({
+          name: child.name || "(unnamed)",
+          triangles: Math.round(meshTriangles),
+          vertices: meshVertices,
+          skinned: !!child.isSkinnedMesh,
+          castShadow: !!child.castShadow,
+        });
+
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach((mat) => {
+          if (!mat) return;
+          if (!uniqueMaterials.has(mat.uuid)) {
+            uniqueMaterials.add(mat.uuid);
+            materials += 1;
+            const type = mat.type || "Material";
+            materialTypes[type] = (materialTypes[type] || 0) + 1;
+          }
+
+          [
+            "map",
+            "normalMap",
+            "roughnessMap",
+            "metalnessMap",
+            "aoMap",
+            "emissiveMap",
+            "alphaMap",
+            "envMap",
+            "lightMap",
+            "bumpMap",
+            "displacementMap",
+          ].forEach((key) => {
+            const tex = mat[key];
+            if (!tex || uniqueTextures.has(tex.uuid)) return;
+            uniqueTextures.add(tex.uuid);
+            textures += 1;
+            const w = tex.image?.width || tex.source?.data?.width || 0;
+            const h = tex.image?.height || tex.source?.data?.height || 0;
+            if (w && h) {
+              textureSizes.push({
+                name: tex.name || key,
+                size: `${w}x${h}`,
+                mp: +((w * h) / 1e6).toFixed(2),
+              });
+            }
+          });
+        });
+      });
+
+      heaviestMeshes.sort((a, b) => b.triangles - a.triangles);
+      textureSizes.sort((a, b) => b.mp - a.mp);
+
+      const animClips = (animations || []).map((clip) => ({
+        name: clip.name,
+        duration: +clip.duration.toFixed(2),
+        tracks: clip.tracks.length,
+        // Rough cost signal: each track updates a property every mixer tick.
+      }));
+
+      const report = {
+        label,
+        meshes,
+        skinnedMeshes,
+        points,
+        lines,
+        triangles: Math.round(triangles),
+        vertices,
+        materials,
+        textures,
+        shadowCasters,
+        shadowReceivers,
+        morphTargets,
+        materialTypes,
+        animations: {
+          clipCount: animClips.length,
+          clips: animClips,
+          totalTracks: animClips.reduce((sum, clip) => sum + clip.tracks, 0),
+        },
+        topMeshesByTriangles: heaviestMeshes.slice(0, 15),
+        largestTextures: textureSizes.slice(0, 10),
+      };
+
+      // Readability helpers for what usually hurts FPS.
+      const hints = [];
+      if (report.triangles > 500_000) {
+        hints.push(`High triangle count (${report.triangles.toLocaleString()}) — mesh density is a likely bottleneck.`);
+      } else if (report.triangles > 150_000) {
+        hints.push(`Moderate triangle count (${report.triangles.toLocaleString()}) — can still hurt on integrated GPUs.`);
+      }
+      if (report.meshes > 500) {
+        hints.push(`Many meshes (${report.meshes}) — draw-call overhead can dominate more than polycount.`);
+      } else if (report.meshes > 150) {
+        hints.push(`Elevated mesh count (${report.meshes}) — consider merging static meshes.`);
+      }
+      if (report.shadowCasters > 100) {
+        hints.push(
+          `Lots of shadow casters (${report.shadowCasters}) with ${CITY_SHADOW_MAP_SIZE}px shadow maps — shadows are expensive.`
+        );
+      }
+      if (report.animations.clipCount > 0 && report.animations.totalTracks > 50) {
+        hints.push(
+          `Heavy animation (${report.animations.clipCount} clips / ${report.animations.totalTracks} tracks) — skinning + mixer updates cost CPU every frame.`
+        );
+      } else if (report.animations.clipCount > 0) {
+        hints.push(
+          `Animations present (${report.animations.clipCount} clips / ${report.animations.totalTracks} tracks) — contributes, but likely not the only cost.`
+        );
+      }
+      if (report.skinnedMeshes > 0) {
+        hints.push(`Skinned meshes: ${report.skinnedMeshes} — GPU skinning + bones add cost on top of static meshes.`);
+      }
+      if (report.textures > 40 || textureSizes.some((t) => t.mp >= 4)) {
+        hints.push(
+          `Texture load: ${report.textures} unique textures` +
+            (textureSizes[0] ? `, largest ~${textureSizes[0].size}` : "") +
+            " — VRAM/bandwidth pressure."
+        );
+      }
+      if (!hints.length) {
+        hints.push("Counts look moderate — also check DPR, Environment HDR, and shadow map size at runtime.");
+      }
+
+      console.groupCollapsed(`%c[Perf] ${label} scene breakdown`, "color:#7dd3fc;font-weight:bold");
+      console.table({
+        meshes: report.meshes,
+        skinnedMeshes: report.skinnedMeshes,
+        triangles: report.triangles,
+        vertices: report.vertices,
+        materials: report.materials,
+        textures: report.textures,
+        shadowCasters: report.shadowCasters,
+        shadowReceivers: report.shadowReceivers,
+        morphTargets: report.morphTargets,
+        animClips: report.animations.clipCount,
+        animTracks: report.animations.totalTracks,
+      });
+      console.log("Material types:", report.materialTypes);
+      console.log("Animation clips:", report.animations.clips);
+      console.log("Top meshes by triangles:", report.topMeshesByTriangles);
+      console.log("Largest textures:", report.largestTextures);
+      console.log("%cLikely bottleneck hints:", "color:#fbbf24;font-weight:bold");
+      hints.forEach((hint, i) => console.log(`${i + 1}. ${hint}`));
+      console.groupEnd();
+
+      return report;
+    }
+
+    function RuntimePerfProbe({ enabled = PERF_LOG_ENABLED }) {
+      const { gl } = useThree();
+      const stats = useRef({
+        frames: 0,
+        elapsed: 0,
+        lastLog: 0,
+        fps: 0,
+        ms: 0,
+      });
+
+      useFrame((_, delta) => {
+        if (!enabled) return;
+
+        const s = stats.current;
+        s.frames += 1;
+        s.elapsed += delta;
+
+        // Log about once per second.
+        if (s.elapsed < 1) return;
+
+        s.fps = +(s.frames / s.elapsed).toFixed(1);
+        s.ms = +((s.elapsed / s.frames) * 1000).toFixed(2);
+        s.frames = 0;
+        s.elapsed = 0;
+        s.lastLog += 1;
+
+        const info = gl.info;
+        const drawCalls = info.render.calls;
+        const tris = info.render.triangles;
+        const geoms = info.memory.geometries;
+        const texs = info.memory.textures;
+
+        let bottleneck = "balanced / unclear";
+        if (s.fps < 30 && drawCalls > 200) bottleneck = "likely draw-calls / mesh count";
+        else if (s.fps < 30 && tris > 500_000) bottleneck = "likely geometry (triangles)";
+        else if (s.fps < 30 && texs > 40) bottleneck = "likely textures / GPU memory pressure";
+        else if (s.fps < 45) bottleneck = "moderate load (shadows + anim + scene)";
+
+        console.log(
+          `%c[Perf] runtime  fps=${s.fps}  frame=${s.ms}ms  drawCalls=${drawCalls}  tris=${tris.toLocaleString()}  geoms=${geoms}  textures=${texs}  → ${bottleneck}`,
+          s.fps < 30 ? "color:#f87171" : s.fps < 50 ? "color:#fbbf24" : "color:#4ade80"
+        );
+      });
+
+      return null;
+    }
+
     const CAR_NAME_PATTERN = /^Car\d+/;
 
     function findCarAncestor(object) {
@@ -379,7 +621,7 @@ const MAX_TEXTURE_ANISOTROPY = 4;
     }
 
     function CityModel({ focusedCar, onCarFocus }) {
-      const { scene, animations } = useGLTF("/models/road_with_car.glb");
+      const { scene, animations } = useGLTF("/models/city.glb");
       const controlsRef = useRef(null);
       const { camera, gl } = useThree();
       const [hoveredCar, setHoveredCar] = useState(false);
@@ -436,6 +678,10 @@ const MAX_TEXTURE_ANISOTROPY = 4;
       }, [camera, cameraPosition, far, near, target]);
 
       useEffect(() => {
+        analyzeScenePerformance(scene, animations, "city.glb");
+      }, [scene, animations]);
+
+      useEffect(() => {
         const maxAnisotropy = Math.min(
           gl.capabilities.getMaxAnisotropy(),
           MAX_TEXTURE_ANISOTROPY
@@ -483,7 +729,12 @@ const MAX_TEXTURE_ANISOTROPY = 4;
       }, [gl, scene]);
 
       useEffect(() => {
-        if (!names.length) return;
+        if (!names.length) {
+          if (PERF_LOG_ENABLED) {
+            console.log("%c[Perf] No animation clips on city.glb", "color:#94a3b8");
+          }
+          return;
+        }
 
         names.forEach((name) => {
           const action = actions[name];
@@ -494,6 +745,14 @@ const MAX_TEXTURE_ANISOTROPY = 4;
           action.enabled = true;
           action.play();
         });
+
+        if (PERF_LOG_ENABLED) {
+          console.log(
+            `%c[Perf] Playing ${names.length} animation action(s):`,
+            "color:#c4b5fd;font-weight:bold",
+            names
+          );
+        }
 
         return () => {
           names.forEach((name) => actions[name]?.stop());
@@ -579,6 +838,7 @@ const MAX_TEXTURE_ANISOTROPY = 4;
             defaultCameraPosition={defaultCameraPosition}
             defaultTarget={target}
           />
+          <RuntimePerfProbe />
           <OrbitControls
             ref={controlsRef}
             enableRotate
@@ -739,4 +999,4 @@ const MAX_TEXTURE_ANISOTROPY = 4;
     );
   }
 
-  useGLTF.preload("/models/road_with_car.glb");
+  useGLTF.preload("/models/city.glb");
