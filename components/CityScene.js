@@ -621,7 +621,7 @@ const PERF_LOG_ENABLED = true;
     }
 
     function CityModel({ focusedCar, onCarFocus }) {
-      const { scene, animations } = useGLTF("/models/city.glb");
+      const { scene, animations } = useGLTF("/models/city-2.glb");
       const controlsRef = useRef(null);
       const { camera, gl } = useThree();
       const [hoveredCar, setHoveredCar] = useState(false);
@@ -678,7 +678,7 @@ const PERF_LOG_ENABLED = true;
       }, [camera, cameraPosition, far, near, target]);
 
       useEffect(() => {
-        analyzeScenePerformance(scene, animations, "city.glb");
+        analyzeScenePerformance(scene, animations, "city-2.glb");
       }, [scene, animations]);
 
       useEffect(() => {
@@ -731,7 +731,7 @@ const PERF_LOG_ENABLED = true;
       useEffect(() => {
         if (!names.length) {
           if (PERF_LOG_ENABLED) {
-            console.log("%c[Perf] No animation clips on city.glb", "color:#94a3b8");
+            console.log("%c[Perf] No animation clips on city-2.glb", "color:#94a3b8");
           }
           return;
         }
@@ -999,4 +999,4 @@ const PERF_LOG_ENABLED = true;
     );
   }
 
-  useGLTF.preload("/models/city.glb");
+  useGLTF.preload("/models/city-2.glb");
