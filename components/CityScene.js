@@ -97,6 +97,7 @@ const MAX_TEXTURE_ANISOTROPY = 4;
 
 const PERF_LOG_ENABLED = true;
 const ANIMATIONS_ENABLED = true;
+const CITY_ANIMATION_TIME_SCALE = 0.5;
 
     function analyzeScenePerformance(root, animations = [], label = "Model") {
       if (!PERF_LOG_ENABLED || typeof console === "undefined") return null;
@@ -1281,7 +1282,7 @@ const ANIMATIONS_ENABLED = true;
           return;
         }
 
-        mixer.timeScale = hoveredCar ? 0 : 1;
+        mixer.timeScale = hoveredCar ? 0 : CITY_ANIMATION_TIME_SCALE;
 
         if (!hoveredCar) {
           names.forEach((name) => {
