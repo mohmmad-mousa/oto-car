@@ -12,6 +12,7 @@
   useProgress,
 } from "@react-three/drei";
   import { Montserrat } from "next/font/google";
+  import gsap from "gsap";
   import * as THREE from "three";
 
   const focusFont = Montserrat({
@@ -36,8 +37,53 @@
       },
     };
 
+    const CAR_NAME_PATTERN = /^Car\d+/;
+    const CARS_COLLECTION_PATTERN = /^Cars$/i;
+
+    // Blender "Cars" collection + common GLB export variants (spaces vs underscores).
+    const FOCUSABLE_NAME_KEYS = new Set([
+      "whitesedan",
+      "redtaxi",
+      "bigblacksuv",
+      "dubaibus",
+      "selfdrivingtaxi",
+      "sefdrivingtaxi",
+      "cockpit",
+      "flyingtaxi",
+      "etihadrail2",
+      "dubaimetro1",
+      "etihadrail1",
+      "dubaimetro2",
+    ]);
+
+    function normalizeFocusName(name = "") {
+      return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    }
+
+    function isFocusableObject(name = "") {
+      if (!name) return false;
+      if (CAR_NAME_PATTERN.test(name)) return true;
+
+      const normalized = normalizeFocusName(name);
+      if (FOCUSABLE_NAME_KEYS.has(normalized)) return true;
+      if (normalized.includes("flyingtaxi")) return true;
+      if (normalized.includes("selfdrivingtaxi") || normalized.includes("sefdrivingtaxi")) {
+        return true;
+      }
+
+      return false;
+    }
+
     function getCarFocusTheme(carName = "") {
-      if (/Car2/i.test(carName)) {
+      const normalized = normalizeFocusName(carName);
+
+      if (
+        /Car2/i.test(carName) ||
+        normalized.includes("whitesedan") ||
+        normalized.includes("dubaimetro") ||
+        normalized.includes("etihadrail") ||
+        normalized.includes("flyingtaxi")
+      ) {
         return CAR_FOCUS_THEMES.green;
       }
 
@@ -46,10 +92,11 @@
 
     const CAR_AUTO_ROTATE_SPEED = 0.12;
 const CITY_SHADOW_MAP_SIZE = 2048;
-const FOCUS_SHADOW_MAP_SIZE = 1024;
+const FOCUS_SHADOW_MAP_SIZE = 2048;
 const MAX_TEXTURE_ANISOTROPY = 4;
 
 const PERF_LOG_ENABLED = true;
+const ANIMATIONS_ENABLED = true;
 
     function analyzeScenePerformance(root, animations = [], label = "Model") {
       if (!PERF_LOG_ENABLED || typeof console === "undefined") return null;
@@ -291,21 +338,42 @@ const PERF_LOG_ENABLED = true;
       return null;
     }
 
-    const CAR_NAME_PATTERN = /^Car\d+/;
-
     function findCarAncestor(object) {
       let current = object;
+
       while (current) {
-        if (CAR_NAME_PATTERN.test(current.name)) return current;
-        current = current.parent;
+        if (isFocusableObject(current.name)) return current;
+
+        const parent = current.parent;
+        if (parent && CARS_COLLECTION_PATTERN.test(parent.name)) {
+          return current;
+        }
+
+        current = parent;
       }
+
       return null;
     }
 
+    function removeHoverIndicators(root) {
+      if (!root) return;
+
+      const toRemove = [];
+      root.traverse((child) => {
+        if (child.userData?.isHoverIndicator) {
+          toRemove.push(child);
+        }
+      });
+
+      toRemove.forEach((child) => child.parent?.remove(child));
+    }
+
     function createIsolatedCarClone(car) {
+      removeHoverIndicators(car);
       car.updateWorldMatrix(true, true);
 
       const clone = car.clone(true);
+      removeHoverIndicators(clone);
       clone.name = car.name;
       const worldPosition = new THREE.Vector3();
       const worldQuaternion = new THREE.Quaternion();
@@ -325,20 +393,30 @@ const PERF_LOG_ENABLED = true;
       return clone;
     }
 
+    function isLargeTransitFocus(name = "") {
+      const normalized = normalizeFocusName(name);
+      return normalized.includes("etihadrail") || normalized.includes("dubaimetro");
+    }
+
     function getCarFrame(car) {
       const box = new THREE.Box3().setFromObject(car);
       const size = new THREE.Vector3();
       box.getSize(size);
       const carSize = Math.max(size.x, size.y, size.z, 0.1);
+      const zoomIn = isLargeTransitFocus(car.name);
+
+      const cameraDistance = zoomIn ? 0.5 : 1;
+      const minDistanceScale = zoomIn ? 0.2 : 0.38;
+      const maxDistanceScale = zoomIn ? 2.5 : 5;
 
       return {
         carSize,
-        minDistance: Math.max(0.5, carSize * 0.75),
-        maxDistance: Math.max(4, carSize * 5),
+        minDistance: Math.max(0.12, carSize * minDistanceScale),
+        maxDistance: Math.max(4, carSize * maxDistanceScale),
         cameraPosition: new THREE.Vector3(
-          carSize * 1.55,
-          carSize * 0.95,
-          carSize * 1.95
+          carSize * 1.55 * cameraDistance,
+          carSize * 0.95 * cameraDistance,
+          carSize * 1.95 * cameraDistance
         ),
         target: new THREE.Vector3(0, 0, 0),
       };
@@ -351,52 +429,180 @@ const PERF_LOG_ENABLED = true;
       return "Almost ready";
     }
 
-    function CityLoadingOverlay({ active, progress, fadeOut }) {
+    function CityLoadingOverlay({ active, progress, fadeOut, onExitComplete }) {
+      const overlayRef = useRef(null);
+      const titleRef = useRef(null);
+      const subtitleRef = useRef(null);
+      const stageRef = useRef(null);
+      const percentRef = useRef(null);
+      const barRef = useRef(null);
+      const glowPrimaryRef = useRef(null);
+      const glowSecondaryRef = useRef(null);
+      const dotsRef = useRef([]);
+      const displayProgressRef = useRef(0);
+      const exitTweenRef = useRef(null);
+
       const roundedProgress = Math.min(100, Math.round(progress));
+
+      useEffect(() => {
+        const ctx = gsap.context(() => {
+          gsap.set(overlayRef.current, { opacity: 0 });
+          gsap.set([titleRef.current, subtitleRef.current, stageRef.current, percentRef.current], {
+            opacity: 0,
+            y: 24,
+          });
+          gsap.set(barRef.current, { width: "0%" });
+          gsap.set(glowPrimaryRef.current, { opacity: 0.35, scale: 1 });
+          gsap.set(glowSecondaryRef.current, { opacity: 0.2, scale: 1 });
+          gsap.set(dotsRef.current.filter(Boolean), { opacity: 0.25, y: 0 });
+
+          const entrance = gsap.timeline();
+          entrance
+            .to(overlayRef.current, { opacity: 1, duration: 0.65, ease: "power2.out" })
+            .to(titleRef.current, { opacity: 1, y: 0, duration: 0.75, ease: "power3.out" }, "-=0.25")
+            .to(subtitleRef.current, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, "-=0.5")
+            .to(
+              [stageRef.current, percentRef.current],
+              { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" },
+              "-=0.35"
+            );
+
+          gsap.to(glowPrimaryRef.current, {
+            opacity: 0.7,
+            scale: 1.08,
+            duration: 2,
+            ease: "sine.inOut",
+            yoyo: true,
+            repeat: -1,
+          });
+
+          gsap.to(glowSecondaryRef.current, {
+            opacity: 0.5,
+            scale: 1.06,
+            duration: 2.4,
+            ease: "sine.inOut",
+            yoyo: true,
+            repeat: -1,
+            delay: 0.8,
+          });
+
+          dotsRef.current.filter(Boolean).forEach((dot, index) => {
+            gsap.to(dot, {
+              opacity: 1,
+              y: -4,
+              duration: 0.55,
+              ease: "power1.inOut",
+              yoyo: true,
+              repeat: -1,
+              delay: index * 0.2,
+            });
+          });
+        }, overlayRef);
+
+        return () => ctx.revert();
+      }, []);
+
+      useEffect(() => {
+        if (!barRef.current) return;
+
+        gsap.to(barRef.current, {
+          width: `${roundedProgress}%`,
+          duration: 0.45,
+          ease: "power2.out",
+          overwrite: true,
+        });
+
+        const counter = { value: displayProgressRef.current };
+        gsap.to(counter, {
+          value: roundedProgress,
+          duration: 0.45,
+          ease: "power2.out",
+          overwrite: true,
+          onUpdate: () => {
+            displayProgressRef.current = counter.value;
+            if (percentRef.current) {
+              percentRef.current.textContent = `${Math.round(counter.value)}%`;
+            }
+          },
+        });
+      }, [roundedProgress]);
+
+      useEffect(() => {
+        if (!fadeOut || !overlayRef.current) return;
+
+        exitTweenRef.current?.kill();
+        exitTweenRef.current = gsap.to(overlayRef.current, {
+          opacity: 0,
+          duration: 0.75,
+          ease: "power2.inOut",
+          onComplete: () => onExitComplete?.(),
+        });
+
+        return () => exitTweenRef.current?.kill();
+      }, [fadeOut, onExitComplete]);
 
       return (
         <div
+          ref={overlayRef}
           aria-live="polite"
           aria-busy={active}
-          className={`${focusFont.className} pointer-events-none absolute inset-0 z-50 flex items-center justify-center transition-opacity duration-700 ${
-            fadeOut ? "opacity-0" : "opacity-100"
-          }`}
+          className={`${focusFont.className} pointer-events-none absolute inset-0 z-50 flex items-center justify-center opacity-0`}
           style={{
             background:
               "radial-gradient(circle at center, #6a6a6a 0%, #3d3d3d 45%, #141414 75%, #000000 100%)",
           }}
         >
           <div className="absolute inset-0 overflow-hidden">
-            <div className="city-loader-glow absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-white/10 blur-3xl" />
-            <div className="city-loader-glow city-loader-glow-delayed absolute bottom-0 left-1/4 h-56 w-56 rounded-full bg-white/5 blur-3xl" />
+            <div
+              ref={glowPrimaryRef}
+              className="absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-white/10 blur-3xl"
+            />
+            <div
+              ref={glowSecondaryRef}
+              className="absolute bottom-0 left-1/4 h-56 w-56 rounded-full bg-white/5 blur-3xl"
+            />
           </div>
 
           <div className="relative flex w-full max-w-md flex-col items-center px-8">
-            <p className="text-[clamp(2.5rem,8vw,4rem)] font-medium leading-none tracking-[-0.04em] text-white/95">
+            <p
+              ref={titleRef}
+              className="text-[clamp(2.5rem,8vw,4rem)] font-medium leading-none tracking-[-0.04em] text-white/95"
+            >
               OTO CAR
             </p>
-            <p className="mt-2 text-sm font-medium uppercase tracking-[0.35em] text-white/45">
+            <p
+              ref={subtitleRef}
+              className="mt-2 text-sm font-medium uppercase tracking-[0.35em] text-white/45"
+            >
               City Experience
             </p>
 
             <div className="mt-12 w-full">
               <div className="mb-3 flex items-center justify-between text-xs font-medium uppercase tracking-[0.2em] text-white/50">
-                <span>{getLoaderStage(roundedProgress)}</span>
-                <span>{roundedProgress}%</span>
+                <span ref={stageRef}>{getLoaderStage(roundedProgress)}</span>
+                <span ref={percentRef}>{roundedProgress}%</span>
               </div>
 
               <div className="h-px w-full overflow-hidden rounded-full bg-white/10">
                 <div
-                  className="city-loader-bar h-full rounded-full bg-gradient-to-r from-white/25 via-white/80 to-white/25 transition-[width] duration-300 ease-out"
-                  style={{ width: `${roundedProgress}%` }}
+                  ref={barRef}
+                  className="h-full rounded-full bg-gradient-to-r from-white/25 via-white/80 to-white/25"
+                  style={{ width: "0%" }}
                 />
               </div>
             </div>
 
             <div className="mt-10 flex items-center gap-2">
-              <span className="city-loader-dot h-1.5 w-1.5 rounded-full bg-white/70" />
-              <span className="city-loader-dot city-loader-dot-delay-1 h-1.5 w-1.5 rounded-full bg-white/50" />
-              <span className="city-loader-dot city-loader-dot-delay-2 h-1.5 w-1.5 rounded-full bg-white/35" />
+              {[0, 1, 2].map((index) => (
+                <span
+                  key={index}
+                  ref={(element) => {
+                    dotsRef.current[index] = element;
+                  }}
+                  className="h-1.5 w-1.5 rounded-full bg-white/70"
+                  style={{ opacity: index === 0 ? 0.7 : index === 1 ? 0.5 : 0.35 }}
+                />
+              ))}
             </div>
           </div>
         </div>
@@ -478,60 +684,69 @@ const PERF_LOG_ENABLED = true;
       return null;
     }
 
-    function CarFocusLights({ carSize }) {
+    function getFocusedCarLayout(car) {
+      const box = new THREE.Box3().setFromObject(car);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+
+      const carSize = Math.max(size.x, size.y, size.z, 0.1);
+      const groundWidth = size.x * 1.35;
+      const groundDepth = size.z * 1.35;
+      const shadowExtent = Math.max(groundWidth, groundDepth) * 0.55;
+
+      return {
+        carSize,
+        groundY: box.min.y - 0.08,
+        groundWidth,
+        groundDepth,
+        shadowExtent,
+      };
+    }
+
+    function CarFocusLights({ layout }) {
       const lightRef = useRef(null);
+      const { carSize, shadowExtent } = layout;
 
       useEffect(() => {
         const light = lightRef.current;
         if (!light) return;
 
         light.castShadow = true;
-        light.shadow.intensity = 1;
+        light.shadow.intensity = 0.95;
         light.shadow.mapSize.set(FOCUS_SHADOW_MAP_SIZE, FOCUS_SHADOW_MAP_SIZE);
-        light.shadow.bias = -0.00015;
-        light.shadow.normalBias = 0.02;
+        light.shadow.bias = -0.00035;
+        light.shadow.normalBias = 0.008;
+        light.shadow.radius = 2.5;
 
-        const extent = carSize * 1.8;
         const shadowCamera = light.shadow.camera;
-        shadowCamera.left = -extent;
-        shadowCamera.right = extent;
-        shadowCamera.top = extent;
-        shadowCamera.bottom = -extent;
-        shadowCamera.near = 0.1;
-        shadowCamera.far = carSize * 10;
+        shadowCamera.left = -shadowExtent;
+        shadowCamera.right = shadowExtent;
+        shadowCamera.top = shadowExtent;
+        shadowCamera.bottom = -shadowExtent;
+        shadowCamera.near = Math.max(0.5, carSize * 0.15);
+        shadowCamera.far = carSize * 5;
         shadowCamera.updateProjectionMatrix();
-      }, [carSize]);
+      }, [carSize, shadowExtent]);
 
       return (
         <>
           <ambientLight intensity={0.82} color="#f5f8ff" />
           <directionalLight
             ref={lightRef}
-            position={[carSize * 1.8, carSize * 3.2, carSize * 1.4]}
+            position={[shadowExtent * 1.1, carSize * 2.8, shadowExtent * 0.85]}
             intensity={1.45}
             color="#ffffff"
           >
             <object3D attach="target" position={[0, 0, 0]} />
           </directionalLight>
-          <directionalLight position={[-carSize * 1.5, carSize * 1.2, -carSize]} intensity={0.45} color="#d8e4ff" />
+          <directionalLight position={[-shadowExtent, carSize * 1.2, -shadowExtent]} intensity={0.45} color="#d8e4ff" />
         </>
       );
     }
 
     function FocusedCarView({ car }) {
       const rotateRef = useRef(null);
-      const frame = useMemo(() => {
-        const box = new THREE.Box3().setFromObject(car);
-        const size = new THREE.Vector3();
-        box.getSize(size);
-        const carSize = Math.max(size.x, size.y, size.z, 0.1);
-
-        return {
-          carSize,
-          groundY: box.min.y - 0.03,
-          shadowRadius: Math.max(size.x, size.z) * 0.72,
-        };
-      }, [car]);
+      const layout = useMemo(() => getFocusedCarLayout(car), [car]);
 
       useEffect(() => {
         car.traverse((child) => {
@@ -549,17 +764,17 @@ const PERF_LOG_ENABLED = true;
 
       return (
         <>
-          <CarFocusLights carSize={frame.carSize} />
+          <CarFocusLights layout={layout} />
           <group ref={rotateRef}>
             <primitive object={car} />
           </group>
           <mesh
             rotation={[-Math.PI / 2, 0, 0]}
-            position={[0, frame.groundY, 0]}
+            position={[0, layout.groundY, 0]}
             receiveShadow
           >
-            <circleGeometry args={[frame.shadowRadius, 72]} />
-            <shadowMaterial opacity={0.38} transparent color="#000000" />
+            <planeGeometry args={[layout.groundWidth, layout.groundDepth]} />
+            <shadowMaterial transparent opacity={0.32} color="#000000" />
           </mesh>
         </>
       );
@@ -608,6 +823,277 @@ const PERF_LOG_ENABLED = true;
       );
     }
 
+    function shouldShowHoverIndicator(name = "") {
+      const normalized = normalizeFocusName(name);
+
+      if (normalized.includes("dubaimetro") || normalized.includes("etihadrail")) {
+        return false;
+      }
+      if (normalized.includes("cockpit") || normalized.includes("flyingtaxi")) {
+        return false;
+      }
+
+      return true;
+    }
+
+    function getBusMesh(target) {
+      let exactMatch = null;
+      let fuzzyMatch = null;
+
+      const consider = (object) => {
+        if (!object?.isMesh) return;
+        const normalized = normalizeFocusName(object.name);
+        if (normalized === "dubaibus") {
+          exactMatch = object;
+        } else if (normalized.includes("bus") && !fuzzyMatch) {
+          fuzzyMatch = object;
+        }
+      };
+
+      consider(target);
+      target.traverse((child) => consider(child));
+
+      return exactMatch ?? fuzzyMatch;
+    }
+
+    function runHoverCircleIntro(circleRefs, tweensRef) {
+      tweensRef.current.forEach((tween) => tween.kill());
+      tweensRef.current = [];
+
+      circleRefs.current.filter(Boolean).forEach((mesh, index) => {
+        mesh.scale.set(0.01, 0.01, 0.01);
+        mesh.material.opacity = 0;
+
+        tweensRef.current.push(
+          gsap.to(mesh.scale, {
+            x: 1,
+            y: 1,
+            z: 1,
+            duration: 0.5,
+            delay: index * 0.09,
+            ease: "back.out(2)",
+          })
+        );
+
+        tweensRef.current.push(
+          gsap.to(mesh.material, {
+            opacity: 0.42 - index * 0.08,
+            duration: 0.4,
+            delay: index * 0.09,
+            ease: "power2.out",
+          })
+        );
+
+        tweensRef.current.push(
+          gsap.to(mesh.scale, {
+            x: 1.06,
+            y: 1.06,
+            z: 1.06,
+            duration: 1.15 + index * 0.12,
+            ease: "sine.inOut",
+            yoyo: true,
+            repeat: -1,
+            delay: 0.55 + index * 0.14,
+          })
+        );
+      });
+    }
+
+    function BusHoverIndicator({ target, fitScale }) {
+      const groupRef = useRef(null);
+      const circleRefs = useRef([]);
+      const tweensRef = useRef([]);
+      const busMeshRef = useRef(null);
+      const layout = useMemo(() => {
+        const busMesh = getBusMesh(target);
+        if (!busMesh) {
+          return { radii: [1, 1.6, 2.2], groundOffset: 0.15 };
+        }
+
+        busMesh.updateWorldMatrix(true, true);
+        const box = new THREE.Box3().setFromObject(busMesh);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+
+        const scale = Math.max(fitScale, 0.0001);
+        const localFootprint = Math.max(size.x, size.z, 0.001) / scale;
+        const radius = localFootprint * 0.7;
+
+        return {
+          radii: [radius * 0.45, radius * 0.72, radius * 1],
+          groundOffset: Math.max(size.y * 0.055, 0.15),
+        };
+      }, [target, fitScale]);
+
+      const sync = useMemo(
+        () => ({
+          box: new THREE.Box3(),
+          center: new THREE.Vector3(),
+          bottom: new THREE.Vector3(),
+        }),
+        []
+      );
+
+      useEffect(() => {
+        busMeshRef.current = getBusMesh(target);
+        runHoverCircleIntro(circleRefs, tweensRef);
+
+        return () => {
+          tweensRef.current.forEach((tween) => tween.kill());
+          tweensRef.current = [];
+        };
+      }, [target, layout]);
+
+      useFrame(() => {
+        const busMesh = busMeshRef.current;
+        const group = groupRef.current;
+        const fitGroup = group?.parent;
+        if (!busMesh || !group || !fitGroup) return;
+
+        busMesh.updateWorldMatrix(true, true);
+        sync.box.setFromObject(busMesh);
+        sync.box.getCenter(sync.center);
+        sync.bottom.set(
+          sync.center.x,
+          sync.box.min.y + layout.groundOffset,
+          sync.center.z
+        );
+        group.position.copy(fitGroup.worldToLocal(sync.bottom));
+      });
+
+      return (
+        <group ref={groupRef}>
+          {layout.radii.map((radius, index) => (
+            <mesh
+              key={`bus-${target.uuid}-${index}`}
+              ref={(element) => {
+                circleRefs.current[index] = element;
+              }}
+              rotation={[-Math.PI / 2, 0, 0]}
+              renderOrder={10}
+            >
+              <circleGeometry args={[radius, 56]} />
+              <meshBasicMaterial
+                color="#000000"
+                transparent
+                opacity={0}
+                depthWrite={false}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+          ))}
+        </group>
+      );
+    }
+
+    function getTargetBounds(target) {
+      const box = new THREE.Box3();
+      let initialized = false;
+
+      target.traverse((child) => {
+        if (!child.isMesh) return;
+
+        const meshBox = new THREE.Box3().setFromObject(child);
+        const meshSize = new THREE.Vector3();
+        meshBox.getSize(meshSize);
+        const footprint = Math.max(meshSize.x, meshSize.z, 0.001);
+
+        if (meshSize.y < footprint * 0.08 && footprint > 80) {
+          return;
+        }
+
+        if (initialized) {
+          box.union(meshBox);
+        } else {
+          box.copy(meshBox);
+          initialized = true;
+        }
+      });
+
+      if (!initialized) {
+        box.setFromObject(target);
+      }
+
+      return box;
+    }
+
+    function getTargetHoverLayout(target) {
+      target.updateWorldMatrix(true, true);
+
+      const box = getTargetBounds(target);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+
+      const bottomCenter = new THREE.Vector3(center.x, box.min.y, center.z);
+      const localBottom = target.worldToLocal(bottomCenter.clone());
+      const footprint = Math.max(size.x, size.z);
+      const radius = footprint * 0.14;
+
+      return {
+        position: localBottom,
+        radii: [radius * 0.45, radius * 0.72, radius * 1],
+        lift: Math.max(size.y * 0.01, 0.08),
+      };
+    }
+
+    function ClickableHoverIndicator({ target }) {
+      const groupRef = useRef(null);
+      const circleRefs = useRef([]);
+      const tweensRef = useRef([]);
+      const layout = useMemo(() => getTargetHoverLayout(target), [target]);
+
+      useEffect(() => {
+        const group = groupRef.current;
+        if (!group || !target) return;
+
+        target.add(group);
+        group.userData.isHoverIndicator = true;
+        group.position.set(
+          layout.position.x,
+          layout.position.y + layout.lift,
+          layout.position.z
+        );
+
+
+        
+        runHoverCircleIntro(circleRefs, tweensRef);
+
+        return () => {
+          tweensRef.current.forEach((tween) => tween.kill());
+          tweensRef.current = [];
+          if (group.parent === target) {
+            target.remove(group);
+          }
+        };
+      }, [layout, target]);
+
+      return (
+        <group ref={groupRef}>
+          {layout.radii.map((radius, index) => (
+            <mesh
+              key={`${target.uuid}-${index}`}
+              ref={(element) => {
+                circleRefs.current[index] = element;
+              }}
+              rotation={[-Math.PI / 2, 0, 0]}
+              renderOrder={10}
+            >
+              <circleGeometry args={[radius, 56]} />
+              <meshBasicMaterial
+                color="#000000"
+                transparent
+                opacity={0}
+                depthWrite={false}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+          ))}
+        </group>
+      );
+    }
+
     function DeferredEnvironment() {
       const [ready, setReady] = useState(false);
 
@@ -625,6 +1111,8 @@ const PERF_LOG_ENABLED = true;
       const controlsRef = useRef(null);
       const { camera, gl } = useThree();
       const [hoveredCar, setHoveredCar] = useState(false);
+      const [hoveredTarget, setHoveredTarget] = useState(null);
+      const hoverCountRef = useRef(0);
 
       useCursor(hoveredCar && !focusedCar, "pointer");
 
@@ -653,8 +1141,8 @@ const PERF_LOG_ENABLED = true;
             fitPosition: [-center.x * scale, -center.y * scale, -center.z * scale],
             fitScale: scale,
             target: [0, 0, 0],
-            minDistance: Math.max(0.8, fittedRadius * 0.22),
-            maxDistance: Math.max(20, fittedRadius * 8),
+            minDistance: Math.max(0.2, fittedRadius * 0.06),
+            maxDistance: Math.max(40, fittedRadius * 14),
             cameraPosition: [fittedRadius * 1.05, fittedRadius * 0.65, fittedRadius * 1.05],
             near: Math.max(0.01, fittedRadius * 0.01),
             far: Math.max(200, fittedRadius * 40),
@@ -679,6 +1167,23 @@ const PERF_LOG_ENABLED = true;
 
       useEffect(() => {
         analyzeScenePerformance(scene, animations, "city-2.glb");
+
+        const meshNames = [];
+        const objectNames = [];
+        scene.traverse((child) => {
+          if (child.name) objectNames.push({ type: child.type, name: child.name });
+          if (child.isMesh) {
+            meshNames.push(child.name || "(unnamed)");
+          }
+        });
+
+        console.groupCollapsed(
+          `%c[Meshes] city-2.glb — ${meshNames.length} meshes`,
+          "color:#34d399;font-weight:bold"
+        );
+        console.table(meshNames.map((name, i) => ({ index: i + 1, name })));
+        console.log("All object names (including groups/empties):", objectNames);
+        console.groupEnd();
       }, [scene, animations]);
 
       useEffect(() => {
@@ -729,6 +1234,15 @@ const PERF_LOG_ENABLED = true;
       }, [gl, scene]);
 
       useEffect(() => {
+        if (!ANIMATIONS_ENABLED) {
+          names.forEach((name) => actions[name]?.stop());
+          if (mixer) mixer.timeScale = 0;
+          if (PERF_LOG_ENABLED) {
+            console.log("%c[Perf] Animations disabled for city-2.glb", "color:#94a3b8");
+          }
+          return;
+        }
+
         if (!names.length) {
           if (PERF_LOG_ENABLED) {
             console.log("%c[Perf] No animation clips on city-2.glb", "color:#94a3b8");
@@ -762,27 +1276,33 @@ const PERF_LOG_ENABLED = true;
       useEffect(() => {
         if (!mixer) return;
 
-        if (focusedCar) {
+        if (!ANIMATIONS_ENABLED || focusedCar) {
           mixer.timeScale = 0;
           return;
         }
 
-        mixer.timeScale = 1;
-        names.forEach((name) => {
-          const action = actions[name];
-          if (action && !action.isRunning()) {
-            action.play();
-          }
-        });
-      }, [actions, focusedCar, mixer, names]);
+        mixer.timeScale = hoveredCar ? 0 : 1;
+
+        if (!hoveredCar) {
+          names.forEach((name) => {
+            const action = actions[name];
+            if (action && !action.isRunning()) {
+              action.play();
+            }
+          });
+        }
+      }, [actions, focusedCar, hoveredCar, mixer, names]);
 
       const handleCarPointerOver = useCallback(
         (event) => {
           if (focusedCar) return;
           event.stopPropagation();
-          if (findCarAncestor(event.object)) {
-            setHoveredCar(true);
-          }
+          const car = findCarAncestor(event.object);
+          if (!car) return;
+
+          hoverCountRef.current += 1;
+          setHoveredCar(true);
+          setHoveredTarget(car);
         },
         [focusedCar]
       );
@@ -790,7 +1310,13 @@ const PERF_LOG_ENABLED = true;
       const handleCarPointerOut = useCallback(
         (event) => {
           event.stopPropagation();
-          setHoveredCar(false);
+          if (!findCarAncestor(event.object)) return;
+
+          hoverCountRef.current = Math.max(0, hoverCountRef.current - 1);
+          if (hoverCountRef.current === 0) {
+            setHoveredCar(false);
+            setHoveredTarget(null);
+          }
         },
         []
       );
@@ -799,12 +1325,15 @@ const PERF_LOG_ENABLED = true;
         (event) => {
           event.stopPropagation();
           const car = findCarAncestor(event.object);
-          if (!car || !mixer) return;
+          if (!car) return;
 
-          mixer.timeScale = 0;
+          hoverCountRef.current = 0;
+          setHoveredCar(false);
+          setHoveredTarget(null);
+          removeHoverIndicators(car);
           onCarFocus(createIsolatedCarClone(car));
         },
-        [mixer, onCarFocus]
+        [onCarFocus]
       );
 
       const defaultCameraPosition = START_CAMERA_POSITION ?? cameraPosition;
@@ -830,6 +1359,13 @@ const PERF_LOG_ENABLED = true;
               onPointerOut={handleCarPointerOut}
               onClick={handleCarClick}
             />
+            {!focusedCar && hoveredTarget && shouldShowHoverIndicator(hoveredTarget.name) && (
+              normalizeFocusName(hoveredTarget.name).includes("dubaibus") ? (
+                <BusHoverIndicator target={hoveredTarget} fitScale={fitScale} />
+              ) : (
+                <ClickableHoverIndicator target={hoveredTarget} />
+              )
+            )}
           </group>
           {focusedCar && <FocusedCarView car={focusedCar} />}
           <CameraFocus
@@ -842,7 +1378,7 @@ const PERF_LOG_ENABLED = true;
           <OrbitControls
             ref={controlsRef}
             enableRotate
-            enableZoom={!focusedCar}
+            enableZoom
             enablePan={!focusedCar}
             enableDamping
             dampingFactor={0.08}
@@ -859,6 +1395,9 @@ const PERF_LOG_ENABLED = true;
       const [loading, setLoading] = useState({ active: true, progress: 0 });
       const [loaderVisible, setLoaderVisible] = useState(true);
       const [loaderFadeOut, setLoaderFadeOut] = useState(false);
+      const handleLoaderExitComplete = useCallback(() => {
+        setLoaderVisible(false);
+      }, []);
       const focusTheme = focusedCar ? getCarFocusTheme(focusedCar.name) : null;
 
       useEffect(() => {
@@ -887,8 +1426,7 @@ const PERF_LOG_ENABLED = true;
       useEffect(() => {
         if (!loading.active && loading.progress >= 100) {
           setLoaderFadeOut(true);
-          const timer = setTimeout(() => setLoaderVisible(false), 700);
-          return () => clearTimeout(timer);
+          return;
         }
 
         if (loading.active) {
@@ -922,6 +1460,7 @@ const PERF_LOG_ENABLED = true;
               active={loading.active}
               progress={loading.progress}
               fadeOut={loaderFadeOut}
+              onExitComplete={handleLoaderExitComplete}
             />
           )}
           <Canvas
