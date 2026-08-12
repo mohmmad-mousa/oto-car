@@ -300,7 +300,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         lastLog: 0,
         fps: 0,
         ms: 0,
-      });
+      }); 
 
       useFrame((_, delta) => {
         if (!enabled) return;

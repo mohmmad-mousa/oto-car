@@ -30,7 +30,7 @@ const CARS = [
   },
   {
     id: "red-taxi",
-    name: "Red Taxi",
+    name: "Dubai Taxi",
     src: "/models/optimized-models/Red Taxi-optimized.glb",
     phrase: "Iconic Dubai rides, ready when you are.",
     color: "#B84A4A",
@@ -71,9 +71,13 @@ const CARS = [
 ];
 
 const AUTO_ROTATE_SPEED = 0.28;
-const MODEL_TARGET_SIZE = 2.7;
+const MODEL_TARGET_SIZE = 2.35;
+const MODEL_TARGET_SIZE_BY_ID = {
+  "dubai-bus": 2.35,
+};
 const AUTO_SWITCH_MS = 7000;
 const EXIT_X = 6;
+const DARK_VISIBILITY_IDS = new Set(["big-suv", "self-driving", "white-van"]);
 
 // Shared start framing for every car (from orbit tracker).
 const CAMERA_START = [2.807, 2.058, -3.179];
@@ -87,7 +91,7 @@ const LOCKED_POLAR_ANGLE = (() => {
   return Math.acos(THREE.MathUtils.clamp(dy / radius, -1, 1));
 })();
 
-function centerModel(root) {
+function centerModel(root, targetSize = MODEL_TARGET_SIZE) {
   const box = new THREE.Box3().setFromObject(root);
   const center = new THREE.Vector3();
   const size = new THREE.Vector3();
@@ -97,7 +101,7 @@ function centerModel(root) {
   root.position.sub(center);
 
   const maxDim = Math.max(size.x, size.y, size.z, 0.1);
-  root.scale.setScalar(MODEL_TARGET_SIZE / maxDim);
+  root.scale.setScalar(targetSize / maxDim);
 
   root.updateMatrixWorld(true);
   const fitted = new THREE.Box3().setFromObject(root);
@@ -109,22 +113,66 @@ function centerModel(root) {
   root.position.y -= fitted.min.y;
 }
 
-function ShowcaseCar({ src, groupRef, autoSpin, paused }) {
+function prepareModelMaterials(root, boostDarkVisibility) {
+  root.traverse((child) => {
+    if (!child.isMesh) return;
+    child.castShadow = true;
+    child.receiveShadow = true;
+
+    const materials = Array.isArray(child.material)
+      ? child.material
+      : child.material
+        ? [child.material]
+        : [];
+
+    child.material = materials.map((mat) => {
+      const next = mat.clone();
+      if (!boostDarkVisibility || !next.color) return next;
+
+      const luminance =
+        next.color.r * 0.2126 + next.color.g * 0.7152 + next.color.b * 0.0722;
+
+      // Only dark-visibility cars: lift dark paint for silhouette.
+      if (luminance < 0.22) {
+        next.color.offsetHSL(0, 0, 0.08);
+        if ("metalness" in next) {
+          next.metalness = Math.min(1, Math.max(next.metalness ?? 0.4, 0.55));
+        }
+        if ("roughness" in next) {
+          next.roughness = Math.min(0.55, Math.max(0.18, (next.roughness ?? 0.45) * 0.8));
+        }
+        if ("emissive" in next) {
+          next.emissive = new THREE.Color("#2a3038");
+          next.emissiveIntensity = 0.12;
+        }
+      }
+
+      return next;
+    });
+
+    if (child.material.length === 1) {
+      child.material = child.material[0];
+    }
+  });
+}
+
+function ShowcaseCar({
+  src,
+  carId,
+  groupRef,
+  autoSpin,
+  paused,
+  boostDarkVisibility = false,
+}) {
   const { scene } = useGLTF(src);
+  const targetSize = MODEL_TARGET_SIZE_BY_ID[carId] ?? MODEL_TARGET_SIZE;
 
   const model = useMemo(() => {
     const clone = scene.clone(true);
-    clone.traverse((child) => {
-      if (!child.isMesh) return;
-      child.castShadow = true;
-      child.receiveShadow = true;
-      if (child.material) {
-        child.material = child.material.clone();
-      }
-    });
-    centerModel(clone);
+    prepareModelMaterials(clone, boostDarkVisibility);
+    centerModel(clone, targetSize);
     return clone;
-  }, [scene]);
+  }, [scene, boostDarkVisibility, targetSize]);
 
   useFrame((_, delta) => {
     if (!groupRef.current || !autoSpin || paused) return;
@@ -138,7 +186,7 @@ function ShowcaseCar({ src, groupRef, autoSpin, paused }) {
   );
 }
 
-function ShowcaseLights() {
+function ShowcaseLights({ boostDarkVisibility = false }) {
   return (
     <>
       <ambientLight intensity={0.75} color="#f5f8ff" />
@@ -152,6 +200,15 @@ function ShowcaseLights() {
         shadow-bias={-0.00035}
       />
       <directionalLight position={[-3, 2.2, -2]} intensity={0.4} color="#d8e4ff" />
+
+      {boostDarkVisibility ? (
+        <>
+          {/* Rim boost — only while a dark car is settled (never mid-transition) */}
+          <directionalLight position={[-2.2, 3.0, -4.0]} intensity={1.05} color="#ffffff" />
+          <directionalLight position={[3.4, 1.8, -3.2]} intensity={0.75} color="#c9d7ff" />
+          <pointLight position={[0, 2.2, -3.2]} intensity={0.55} distance={10} color="#ffffff" />
+        </>
+      ) : null}
     </>
   );
 }
@@ -262,7 +319,9 @@ function CarTransitionDriver({
 
 function CarScene({
   activeSrc,
+  activeId,
   incomingSrc,
+  incomingId,
   isTransitioning,
   transitionId,
   onTransitionComplete,
@@ -295,18 +354,24 @@ function CarScene({
   }, [isTransitioning, activeSrc]);
 
   const paused = isInteracting || isTransitioning;
+  const activeBoost = DARK_VISIBILITY_IDS.has(activeId);
+  // Scene lights hit every mesh — only enable boost when settled on a dark car,
+  // so transitions never flash extra light onto other models.
+  const rimLightsOn = !isTransitioning && activeBoost;
 
   return (
     <>
       <CameraAim />
-      <ShowcaseLights />
+      <ShowcaseLights boostDarkVisibility={rimLightsOn} />
       <Suspense fallback={null}>
         <ShowcaseCar
           key={`out-${activeSrc}`}
           src={activeSrc}
+          carId={activeId}
           groupRef={outgoingRef}
           autoSpin={!isTransitioning}
           paused={paused}
+          boostDarkVisibility={activeBoost}
         />
       </Suspense>
       {isTransitioning && incomingSrc ? (
@@ -314,9 +379,11 @@ function CarScene({
           <ShowcaseCar
             key={`in-${incomingSrc}-${transitionId}`}
             src={incomingSrc}
+            carId={incomingId}
             groupRef={incomingRef}
             autoSpin={false}
             paused
+            boostDarkVisibility={DARK_VISIBILITY_IDS.has(incomingId)}
           />
         </Suspense>
       ) : null}
@@ -786,7 +853,9 @@ export default function MobileCarShowcase() {
           <AdaptiveDpr pixelated />
           <CarScene
             activeSrc={activeCar.src}
+            activeId={activeCar.id}
             incomingSrc={incomingCar?.src ?? null}
+            incomingId={incomingCar?.id ?? null}
             isTransitioning={isTransitioning}
             transitionId={transitionId}
             onTransitionComplete={handleTransitionComplete}
@@ -834,14 +903,14 @@ export default function MobileCarShowcase() {
                   key={car.id}
                   type="button"
                   onClick={() => goTo(realIndex)}
-                  className="flex w-[7.25rem] shrink-0 flex-col items-start gap-1 rounded-2xl border border-white/15 bg-white/5 px-3 py-2.5 text-left transition active:scale-[0.98]"
+                  className="flex w-[7.25rem] shrink-0 flex-col items-start gap-1 rounded-2xl border border-white/35 bg-white/12 px-3 py-2.5 text-left transition active:scale-[0.98]"
                 >
                   <span
                     className="h-1.5 w-1.5 rounded-full"
                     style={{ backgroundColor: car.color }}
                     aria-hidden
                   />
-                  <span className="text-[0.72rem] font-medium leading-snug text-white/90">
+                  <span className="text-[0.78rem] font-semibold leading-snug text-white">
                     {car.name}
                   </span>
                 </button>
