@@ -707,7 +707,8 @@ export default function MobileCarShowcase() {
 
   const activeCar = CARS[activeIndex];
   const incomingCar = nextIndex != null ? CARS[nextIndex] : null;
-  const otherCars = CARS.filter((_, i) => i !== activeIndex);
+  // Swap copy/accent as soon as a transition starts — don't wait for the slide to finish.
+  const displayCar = incomingCar ?? activeCar;
 
   const goTo = useCallback(
     (index) => {
@@ -794,7 +795,7 @@ export default function MobileCarShowcase() {
     if (skipFirstTween.current) {
       skipFirstTween.current = false;
       if (accentRef.current) {
-        accentRef.current.style.backgroundColor = activeCar.color;
+        accentRef.current.style.backgroundColor = displayCar.color;
       }
       return;
     }
@@ -802,8 +803,8 @@ export default function MobileCarShowcase() {
     const ctx = gsap.context(() => {
       if (accentRef.current) {
         gsap.to(accentRef.current, {
-          backgroundColor: activeCar.color,
-          duration: 0.55,
+          backgroundColor: displayCar.color,
+          duration: 0.2,
           ease: "power2.out",
         });
       }
@@ -811,14 +812,14 @@ export default function MobileCarShowcase() {
       if (copyRef.current) {
         gsap.fromTo(
           copyRef.current,
-          { opacity: 0, y: 18 },
-          { opacity: 1, y: 0, duration: 0.45, ease: "power2.out" }
+          { opacity: 0, y: 8 },
+          { opacity: 1, y: 0, duration: 0.18, ease: "power2.out" }
         );
       }
     });
 
     return () => ctx.revert();
-  }, [activeIndex, activeCar.color]);
+  }, [displayCar.id, displayCar.color]);
 
   return (
     <div
@@ -835,7 +836,7 @@ export default function MobileCarShowcase() {
       <div
         ref={accentRef}
         className="pointer-events-none absolute left-1/2 top-[50%] h-[34%] w-[95%] -translate-x-1/2 -translate-y-1/2 rounded-[50%] opacity-90 blur-2xl"
-        style={{ backgroundColor: activeCar.color }}
+        style={{ backgroundColor: displayCar.color }}
         aria-hidden
       />
 
@@ -876,17 +877,17 @@ export default function MobileCarShowcase() {
       <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col gap-5 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-4">
         <div ref={copyRef} className="text-center">
           <h2 className="text-[1.85rem] font-semibold leading-tight tracking-tight">
-            {activeCar.name}
+            {displayCar.name}
           </h2>
           <p className="mx-auto mt-2 max-w-xs text-[0.95rem] font-light leading-relaxed text-white/75">
-            {activeCar.phrase}
+            {displayCar.phrase}
           </p>
           <button
             type="button"
             onClick={(event) => event.preventDefault()}
             className="mt-5 inline-flex items-center justify-center rounded-full px-7 py-2.5 text-sm font-medium tracking-wide transition active:scale-[0.98]"
             style={{
-              backgroundColor: activeCar.color,
+              backgroundColor: displayCar.color,
               color: "#0a0a0a",
             }}
           >
@@ -896,21 +897,26 @@ export default function MobileCarShowcase() {
 
         <div className="overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="flex min-w-max justify-center gap-2.5 px-1">
-            {otherCars.map((car) => {
-              const realIndex = CARS.findIndex((item) => item.id === car.id);
+            {CARS.map((car, index) => {
+              const isSelected = displayCar.id === car.id;
               return (
                 <button
                   key={car.id}
                   type="button"
-                  onClick={() => goTo(realIndex)}
-                  className="flex w-[7.25rem] shrink-0 flex-col items-start gap-1 rounded-2xl border border-white/35 bg-white/12 px-3 py-2.5 text-left transition active:scale-[0.98]"
+                  onClick={() => goTo(index)}
+                  aria-current={isSelected ? "true" : undefined}
+                  className={`flex h-[3.25rem] w-[7.25rem] shrink-0 items-start gap-2 rounded-2xl border px-3 py-2.5 text-left ${
+                    isSelected
+                      ? "border-white/70 bg-white/20"
+                      : "border-white/35 bg-white/12"
+                  }`}
                 >
                   <span
-                    className="h-1.5 w-1.5 rounded-full"
+                    className="mt-[0.3em] h-1.5 w-1.5 shrink-0 rounded-full"
                     style={{ backgroundColor: car.color }}
                     aria-hidden
                   />
-                  <span className="text-[0.78rem] font-semibold leading-snug text-white">
+                  <span className="line-clamp-2 h-[2.1em] text-[0.78rem] font-semibold leading-[1.05] text-white">
                     {car.name}
                   </span>
                 </button>
