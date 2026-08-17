@@ -1124,11 +1124,15 @@ export default function MobileCarShowcase() {
       )}
 
       <div
-        ref={accentRef}
-        className="pointer-events-none absolute left-1/2 top-[50%] h-[34%] w-[95%] -translate-x-1/2 -translate-y-1/2 rounded-[50%] opacity-90 blur-2xl"
-        style={{ backgroundColor: displayCar.color }}
+        className="pointer-events-none absolute left-1/2 top-[50%] h-[34%] w-[95%] -translate-x-1/2 -translate-y-1/2 [filter:blur(40px)]"
         aria-hidden
-      />
+      >
+        <div
+          ref={accentRef}
+          className="h-full w-full rounded-[50%] opacity-90"
+          style={{ backgroundColor: displayCar.color }}
+        />
+      </div>
 
       <div
         ref={canvasWrapRef}
