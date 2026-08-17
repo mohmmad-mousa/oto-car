@@ -11,13 +11,13 @@
   useGLTF,
   useProgress,
 } from "@react-three/drei";
-  import { Montserrat } from "next/font/google";
+  import { Poppins } from "next/font/google";
   import gsap from "gsap";
   import * as THREE from "three";
 
-  const focusFont = Montserrat({
+  const focusFont = Poppins({
     subsets: ["latin"],
-    weight: ["400", "500", "600"],
+    weight: ["300", "400", "500", "600", "700"],
   });
 
     // Set to [x, y, z] for a fixed starting camera position, or null for auto-fit.
