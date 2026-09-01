@@ -1,6 +1,6 @@
   'use client';
 
-  import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+  import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
   import { Canvas, useFrame, useThree } from "@react-three/fiber";
   import {
   AdaptiveDpr,
@@ -14,14 +14,20 @@
   import { Poppins } from "next/font/google";
   import gsap from "gsap";
   import * as THREE from "three";
-
   const focusFont = Poppins({
     subsets: ["latin"],
     weight: ["300", "400", "500", "600", "700"],
   });
 
     // Set to [x, y, z] for a fixed starting camera position, or null for auto-fit.
-    const START_CAMERA_POSITION = [0.17, 92.13, -188.39];
+    const START_CAMERA_POSITION = [317.9, 42.4, -7.6];
+    const START_CAMERA_TARGET = [173, -177.6, -9.6];
+    const CAMERA_PEEK = {
+      maxYaw: THREE.MathUtils.degToRad(10),
+      maxPitch: THREE.MathUtils.degToRad(8),
+      smooth: 1.8,
+    };
+    const WORLD_UP = new THREE.Vector3(0, 1, 0);
     const CAR_FOCUS_THEMES = {
       green: {
         backgroundColor: "#7FA875",
@@ -41,18 +47,79 @@
     const CARS_COLLECTION_PATTERN = /^Cars$/i;
 
     // Blender "Cars" collection + common GLB export variants (spaces vs underscores).
+    const VEHICLE_SPOTS = [
+      {
+        locator: "White Sedan",
+        src: "/models/optimized-models/White Sedan-optimized.glb",
+        targetLength: 2.5,
+        yawOffset: 180,
+      },
+      {
+        locator: "Dubai Taxi",
+        src: "/models/optimized-models/Red Taxi-optimized.glb",
+        targetLength: 2.5,
+        yawOffset: 180,
+      },
+      {
+        locator: "Black SUV",
+        src: "/models/optimized-models/BIg SUV Black-optimized.glb",
+        targetLength: 2.5,
+      },
+      {
+        locator: "Dubai Bus",
+        src: "/models/optimized-models/Dubai Bus-optimized.glb",
+        targetLength: 5,
+      },
+      {
+        locator: "Selfdriving Taxi",
+        src: "/models/optimized-models/Self Driving Taxi-optimized.glb",
+        targetLength: 2.5,
+        yawOffset: -90,
+        positionOffset: [30, 0, -2.6],
+      },
+      {
+        locator: "Van",
+        src: "/models/optimized-models/White Van-optimized.glb",
+        targetLength: 2.5,
+        yawOffset: 180,
+      },
+      {
+        locator: "Flying Taxi",
+        src: "/models/optimized-models/Flying Taxi1-optimized.glb",
+        targetLength: 3,
+        yawOffset: 50,
+      },
+      {
+        locator: "Dubai Metro",
+        src: "/models/optimized-models/Dubai Metro-optimized.glb",
+        targetLength: 25,
+        yawOffset: 90,
+        positionOffset: [-15, 0, 0.2],
+      },
+      {
+        locator: "Etihad Rail",
+        src: "/models/optimized-models/Etihad Rail-optimized.glb",
+        targetLength: 25,
+        positionOffset: [10, 0, 0],
+      },
+    ];
+
     const FOCUSABLE_NAME_KEYS = new Set([
       "whitesedan",
       "redtaxi",
+      "dubaitaxi",
       "bigblacksuv",
+      "blacksuv",
       "dubaibus",
       "selfdrivingtaxi",
       "sefdrivingtaxi",
-      "cockpit",
+      "van",
       "flyingtaxi",
-      "etihadrail2",
-      "dubaimetro1",
+      "etihadrail",
       "etihadrail1",
+      "etihadrail2",
+      "dubaimetro",
+      "dubaimetro1",
       "dubaimetro2",
     ]);
 
@@ -70,8 +137,18 @@
       if (normalized.includes("selfdrivingtaxi") || normalized.includes("sefdrivingtaxi")) {
         return true;
       }
+      if (normalized.includes("dubaimetro") || normalized.includes("etihadrail")) return true;
+      if (normalized.includes("dubaibus") || normalized.includes("dubaitaxi")) return true;
 
       return false;
+    }
+
+    function isSelfDrivingTaxi(name = "") {
+      const normalized = normalizeFocusName(name);
+      return (
+        normalized.includes("selfdrivingtaxi") ||
+        normalized.includes("sefdrivingtaxi")
+      );
     }
 
     function getCarFocusTheme(carName = "") {
@@ -82,7 +159,8 @@
         normalized.includes("whitesedan") ||
         normalized.includes("dubaimetro") ||
         normalized.includes("etihadrail") ||
-        normalized.includes("flyingtaxi")
+        normalized.includes("flyingtaxi") ||
+        normalized.includes("van")
       ) {
         return CAR_FOCUS_THEMES.green;
       }
@@ -288,7 +366,6 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
       console.log("%cLikely bottleneck hints:", "color:#fbbf24;font-weight:bold");
       hints.forEach((hint, i) => console.log(`${i + 1}. ${hint}`));
       console.groupEnd();
-
       return report;
     }
 
@@ -339,21 +416,80 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
       return null;
     }
 
+    function CameraCredentialsLog({ controlsRef }) {
+      const { camera } = useThree();
+      const worldPos = useRef(new THREE.Vector3());
+      const lastPos = useRef(new THREE.Vector3(Number.NaN, 0, 0));
+      const lastTarget = useRef(new THREE.Vector3(Number.NaN, 0, 0));
+      const stillFrames = useRef(0);
+      const lastLogged = useRef("");
+
+      useFrame(() => {
+        camera.updateMatrixWorld(true);
+        camera.getWorldPosition(worldPos.current);
+
+        const orbitTarget = controlsRef.current?.target;
+        const targetX = orbitTarget?.x ?? 0;
+        const targetY = orbitTarget?.y ?? 0;
+        const targetZ = orbitTarget?.z ?? 0;
+
+        const moved =
+          !Number.isFinite(lastPos.current.x) ||
+          worldPos.current.distanceToSquared(lastPos.current) > 1e-12 ||
+          (orbitTarget && lastTarget.current.distanceToSquared(orbitTarget) > 1e-12);
+
+        lastPos.current.copy(worldPos.current);
+        if (orbitTarget) lastTarget.current.copy(orbitTarget);
+
+        if (moved) {
+          stillFrames.current = 0;
+          return;
+        }
+
+        stillFrames.current += 1;
+        if (stillFrames.current < 10) return;
+
+        const key = `${worldPos.current.x},${worldPos.current.y},${worldPos.current.z},${targetX},${targetY},${targetZ}`;
+        if (key === lastLogged.current) return;
+        lastLogged.current = key;
+
+        const position = [worldPos.current.x, worldPos.current.y, worldPos.current.z];
+        const lookAt = [targetX, targetY, targetZ];
+
+        console.log("[Camera] position", position);
+        console.log("[Camera] target  ", lookAt);
+        console.log(
+          `[Camera] copy → position: [${position.join(", ")}]  target: [${lookAt.join(", ")}]`
+        );
+      });
+
+      return null;
+    }
+
     function findCarAncestor(object) {
       let current = object;
+      let spawned = null;
+      let focusable = null;
 
       while (current) {
-        if (isFocusableObject(current.name)) return current;
+        const normalized = normalizeFocusName(current.name);
+        if (normalized !== "cockpit") {
+          if (current.userData?.isSpawnedVehicle) {
+            spawned = current;
+          } else if (!focusable && isFocusableObject(current.name)) {
+            focusable = current;
+          }
+        }
 
         const parent = current.parent;
         if (parent && CARS_COLLECTION_PATTERN.test(parent.name)) {
-          return current;
+          return spawned || current;
         }
 
         current = parent;
       }
 
-      return null;
+      return spawned || focusable;
     }
 
     function removeHoverIndicators(root) {
@@ -615,7 +751,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
 
       useEffect(() => {
         gl.toneMapping = THREE.ACESFilmicToneMapping;
-        gl.toneMappingExposure = 1.15;
+        gl.toneMappingExposure = 1;
         gl.outputColorSpace = THREE.SRGBColorSpace;
       }, [gl]);
 
@@ -627,17 +763,44 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         }
 
         gl.setClearColor(0x000000, 0);
-        scene.background = null;
       }, [focusTheme, gl, scene]);
 
       return null;
     }
 
     function CameraFocus({ focusedCar, controlsRef, defaultCameraPosition, defaultTarget }) {
-      const { camera } = useThree();
+      const { camera, gl } = useThree();
       const animatingRef = useRef(false);
       const goalRef = useRef(null);
       const hasInitializedRef = useRef(false);
+      const pointerRef = useRef({ x: 0, y: 0 });
+      const peekRef = useRef({ x: 0, y: 0 });
+      const lookOffset = useRef(new THREE.Vector3());
+      const lookPoint = useRef(new THREE.Vector3());
+      const rightAxis = useRef(new THREE.Vector3());
+
+      useEffect(() => {
+        const onMove = (event) => {
+          const rect = gl.domElement.getBoundingClientRect();
+          if (!rect.width || !rect.height) return;
+          pointerRef.current.x = THREE.MathUtils.clamp((event.clientX - rect.left) / rect.width, 0, 1) * 2 - 1;
+          pointerRef.current.y = THREE.MathUtils.clamp((event.clientY - rect.top) / rect.height, 0, 1) * 2 - 1;
+        };
+
+        const onLeave = () => {
+          pointerRef.current.x = 0;
+          pointerRef.current.y = 0;
+        };
+
+        window.addEventListener("pointermove", onMove);
+        gl.domElement.addEventListener("pointerleave", onLeave);
+        window.addEventListener("blur", onLeave);
+        return () => {
+          window.removeEventListener("pointermove", onMove);
+          gl.domElement.removeEventListener("pointerleave", onLeave);
+          window.removeEventListener("blur", onLeave);
+        };
+      }, [gl]);
 
       useEffect(() => {
         if (!focusedCar && !hasInitializedRef.current) {
@@ -663,23 +826,58 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
       }, [defaultCameraPosition, defaultTarget, focusedCar]);
 
       useFrame((_, delta) => {
-        if (!animatingRef.current || !goalRef.current) return;
+        if (animatingRef.current && goalRef.current) {
+          const lerpFactor = 1 - Math.pow(0.00001, delta);
+          camera.position.lerp(goalRef.current.position, lerpFactor);
 
-        const lerpFactor = 1 - Math.pow(0.00001, delta);
-        camera.position.lerp(goalRef.current.position, lerpFactor);
+          if (controlsRef.current) {
+            controlsRef.current.target.lerp(goalRef.current.target, lerpFactor);
+            controlsRef.current.update();
+          }
 
-        if (controlsRef.current) {
-          controlsRef.current.target.lerp(goalRef.current.target, lerpFactor);
-          controlsRef.current.update();
+          const positionDone = camera.position.distanceTo(goalRef.current.position) < 0.35;
+          const targetDone =
+            controlsRef.current?.target.distanceTo(goalRef.current.target) < 0.35;
+
+          if (positionDone && targetDone) {
+            animatingRef.current = false;
+          }
+          return;
         }
 
-        const positionDone = camera.position.distanceTo(goalRef.current.position) < 0.35;
-        const targetDone =
-          controlsRef.current?.target.distanceTo(goalRef.current.target) < 0.35;
+        if (focusedCar) return;
 
-        if (positionDone && targetDone) {
-          animatingRef.current = false;
+        const nx = pointerRef.current.x;
+        const ny = pointerRef.current.y;
+        const curve = Math.sign(nx) * Math.pow(Math.abs(nx), 0.72);
+        const yawAmount = Math.sin(curve * (Math.PI / 2));
+        const sideLift = Math.pow(1 - Math.cos(curve * (Math.PI / 2)), 1.35);
+        const top = Math.max(-ny, 0);
+        const topLift = Math.pow(top, 0.75);
+
+        const follow = 1 - Math.exp(-CAMERA_PEEK.smooth * delta);
+        peekRef.current.x += (yawAmount - peekRef.current.x) * follow;
+        peekRef.current.y += (sideLift * 0.95 + topLift * 0.9 - peekRef.current.y) * follow;
+
+        lookOffset.current.set(
+          START_CAMERA_TARGET[0] - START_CAMERA_POSITION[0],
+          START_CAMERA_TARGET[1] - START_CAMERA_POSITION[1],
+          START_CAMERA_TARGET[2] - START_CAMERA_POSITION[2]
+        );
+        lookOffset.current.applyAxisAngle(WORLD_UP, -peekRef.current.x * CAMERA_PEEK.maxYaw);
+        rightAxis.current.copy(WORLD_UP).cross(lookOffset.current);
+        if (rightAxis.current.lengthSq() > 0.0001) {
+          rightAxis.current.normalize();
+          lookOffset.current.applyAxisAngle(
+            rightAxis.current,
+            -peekRef.current.y * CAMERA_PEEK.maxPitch
+          );
         }
+
+        camera.position.set(...START_CAMERA_POSITION);
+        camera.up.copy(WORLD_UP);
+        lookPoint.current.copy(camera.position).add(lookOffset.current);
+        camera.lookAt(lookPoint.current);
       });
 
       return null;
@@ -713,7 +911,8 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         if (!light) return;
 
         light.castShadow = true;
-        light.shadow.intensity = 0.95;
+        light.shadow.intensity = 0.52;
+        light.shadow.radius = 3.5;
         light.shadow.mapSize.set(FOCUS_SHADOW_MAP_SIZE, FOCUS_SHADOW_MAP_SIZE);
         light.shadow.bias = -0.00035;
         light.shadow.normalBias = 0.008;
@@ -731,16 +930,21 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
 
       return (
         <>
-          <ambientLight intensity={0.82} color="#f5f8ff" />
+          <ambientLight intensity={0.32} color="#c8c4dc" />
+          <hemisphereLight intensity={0.4} color="#d4ccec" groundColor="#9a96a8" />
           <directionalLight
             ref={lightRef}
             position={[shadowExtent * 1.1, carSize * 2.8, shadowExtent * 0.85]}
-            intensity={1.45}
-            color="#ffffff"
+            intensity={1.85}
+            color="#fff8f0"
           >
             <object3D attach="target" position={[0, 0, 0]} />
           </directionalLight>
-          <directionalLight position={[-shadowExtent, carSize * 1.2, -shadowExtent]} intensity={0.45} color="#d8e4ff" />
+          <directionalLight
+            position={[-shadowExtent, carSize * 1.2, -shadowExtent]}
+            intensity={0.48}
+            color="#d0c8ea"
+          />
         </>
       );
     }
@@ -775,7 +979,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
             receiveShadow
           >
             <planeGeometry args={[layout.groundWidth, layout.groundDepth]} />
-            <shadowMaterial transparent opacity={0.32} color="#000000" />
+            <shadowMaterial transparent opacity={0.16} color="#000000" />
           </mesh>
         </>
       );
@@ -791,7 +995,8 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         // https://threejs.org/manual/en/shadows.html
         // https://threejs.org/docs/#api/en/lights/shadows/LightShadow
         light.castShadow = true;
-        light.shadow.intensity = 1;
+        light.shadow.intensity = 0.36;
+        light.shadow.radius = 3.2;
         light.shadow.mapSize.set(CITY_SHADOW_MAP_SIZE, CITY_SHADOW_MAP_SIZE);
         light.shadow.bias = -0.0001;
         light.shadow.normalBias = 0.04;
@@ -814,194 +1019,43 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         <directionalLight
           ref={lightRef}
           position={[
-            target[0] + radius * 1.4,
-            target[1] + radius * 2.2,
-            target[2] + radius * 0.5,
+            target[0] - radius * 0.85,
+            target[1] + radius * 2.4,
+            target[2] - radius * 1.15,
           ]}
-          intensity={1.8}
-          color="#c8c8c8"
+          intensity={1.85}
+          color="#fff8f0"
         />
       );
     }
 
     function shouldShowHoverIndicator(name = "") {
       const normalized = normalizeFocusName(name);
-
-      if (normalized.includes("dubaimetro") || normalized.includes("etihadrail")) {
-        return false;
-      }
-      if (normalized.includes("cockpit") || normalized.includes("flyingtaxi")) {
-        return false;
-      }
-
-      return true;
+      return !normalized.includes("dubaimetro") && !normalized.includes("etihadrail");
     }
 
-    function getBusMesh(target) {
-      let exactMatch = null;
-      let fuzzyMatch = null;
-
-      const consider = (object) => {
-        if (!object?.isMesh) return;
-        const normalized = normalizeFocusName(object.name);
-        if (normalized === "dubaibus") {
-          exactMatch = object;
-        } else if (normalized.includes("bus") && !fuzzyMatch) {
-          fuzzyMatch = object;
-        }
-      };
-
-      consider(target);
-      target.traverse((child) => consider(child));
-
-      return exactMatch ?? fuzzyMatch;
-    }
-
-    function runHoverCircleIntro(circleRefs, tweensRef) {
-      tweensRef.current.forEach((tween) => tween.kill());
-      tweensRef.current = [];
-
-      circleRefs.current.filter(Boolean).forEach((mesh, index) => {
-        mesh.scale.set(0.01, 0.01, 0.01);
-        mesh.material.opacity = 0;
-
-        tweensRef.current.push(
-          gsap.to(mesh.scale, {
-            x: 1,
-            y: 1,
-            z: 1,
-            duration: 0.5,
-            delay: index * 0.09,
-            ease: "back.out(2)",
-          })
-        );
-
-        tweensRef.current.push(
-          gsap.to(mesh.material, {
-            opacity: 0.42 - index * 0.08,
-            duration: 0.4,
-            delay: index * 0.09,
-            ease: "power2.out",
-          })
-        );
-
-        tweensRef.current.push(
-          gsap.to(mesh.scale, {
-            x: 1.06,
-            y: 1.06,
-            z: 1.06,
-            duration: 1.15 + index * 0.12,
-            ease: "sine.inOut",
-            yoyo: true,
-            repeat: -1,
-            delay: 0.55 + index * 0.14,
-          })
-        );
-      });
-    }
-
-    function BusHoverIndicator({ target, fitScale }) {
-      const groupRef = useRef(null);
-      const circleRefs = useRef([]);
-      const tweensRef = useRef([]);
-      const busMeshRef = useRef(null);
-      const layout = useMemo(() => {
-        const busMesh = getBusMesh(target);
-        if (!busMesh) {
-          return { radii: [1, 1.6, 2.2], groundOffset: 0.15 };
-        }
-
-        busMesh.updateWorldMatrix(true, true);
-        const box = new THREE.Box3().setFromObject(busMesh);
-        const size = new THREE.Vector3();
-        box.getSize(size);
-
-        const scale = Math.max(fitScale, 0.0001);
-        const localFootprint = Math.max(size.x, size.z, 0.001) / scale;
-        const radius = localFootprint * 0.7;
-
-        return {
-          radii: [radius * 0.45, radius * 0.72, radius * 1],
-          groundOffset: Math.max(size.y * 0.055, 0.15),
-        };
-      }, [target, fitScale]);
-
-      const sync = useMemo(
-        () => ({
-          box: new THREE.Box3(),
-          center: new THREE.Vector3(),
-          bottom: new THREE.Vector3(),
-        }),
-        []
-      );
-
-      useEffect(() => {
-        busMeshRef.current = getBusMesh(target);
-        runHoverCircleIntro(circleRefs, tweensRef);
-
-        return () => {
-          tweensRef.current.forEach((tween) => tween.kill());
-          tweensRef.current = [];
-        };
-      }, [target, layout]);
-
-      useFrame(() => {
-        const busMesh = busMeshRef.current;
-        const group = groupRef.current;
-        const fitGroup = group?.parent;
-        if (!busMesh || !group || !fitGroup) return;
-
-        busMesh.updateWorldMatrix(true, true);
-        sync.box.setFromObject(busMesh);
-        sync.box.getCenter(sync.center);
-        sync.bottom.set(
-          sync.center.x,
-          sync.box.min.y + layout.groundOffset,
-          sync.center.z
-        );
-        group.position.copy(fitGroup.worldToLocal(sync.bottom));
-      });
-
-      return (
-        <group ref={groupRef}>
-          {layout.radii.map((radius, index) => (
-            <mesh
-              key={`bus-${target.uuid}-${index}`}
-              ref={(element) => {
-                circleRefs.current[index] = element;
-              }}
-              rotation={[-Math.PI / 2, 0, 0]}
-              renderOrder={10}
-            >
-              <circleGeometry args={[radius, 56]} />
-              <meshBasicMaterial
-                color="#000000"
-                transparent
-                opacity={0}
-                depthWrite={false}
-                side={THREE.DoubleSide}
-              />
-            </mesh>
-          ))}
-        </group>
-      );
-    }
-
-    function getTargetBounds(target) {
+    function getLocalTargetBounds(target) {
+      target.updateWorldMatrix(true, true);
+      const inverse = new THREE.Matrix4().copy(target.matrixWorld).invert();
       const box = new THREE.Box3();
+      const meshBox = new THREE.Box3();
       let initialized = false;
 
       target.traverse((child) => {
-        if (!child.isMesh) return;
+        if (!child.isMesh || child.userData?.isHoverIndicator) return;
+        if (child.parent?.userData?.isHoverIndicator) return;
+        if (!child.geometry) return;
+        if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
+        if (!child.geometry.boundingBox) return;
 
-        const meshBox = new THREE.Box3().setFromObject(child);
+        meshBox.copy(child.geometry.boundingBox);
+        meshBox.applyMatrix4(child.matrixWorld);
+        meshBox.applyMatrix4(inverse);
+
         const meshSize = new THREE.Vector3();
         meshBox.getSize(meshSize);
         const footprint = Math.max(meshSize.x, meshSize.z, 0.001);
-
-        if (meshSize.y < footprint * 0.08 && footprint > 80) {
-          return;
-        }
+        if (meshSize.y < footprint * 0.08 && footprint > 4) return;
 
         if (initialized) {
           box.union(meshBox);
@@ -1013,102 +1067,306 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
 
       if (!initialized) {
         box.setFromObject(target);
+        box.applyMatrix4(inverse);
       }
 
       return box;
     }
 
-    function getTargetHoverLayout(target) {
+    function getWorldBottomCenter(target, out = new THREE.Vector3()) {
       target.updateWorldMatrix(true, true);
+      const worldBox = new THREE.Box3();
+      let initialized = false;
 
-      const box = getTargetBounds(target);
+      target.traverse((child) => {
+        if (!child.isMesh || child.userData?.isHoverIndicator) return;
+        if (child.parent?.userData?.isHoverIndicator) return;
+
+        const meshBox = new THREE.Box3().setFromObject(child);
+        const meshSize = new THREE.Vector3();
+        meshBox.getSize(meshSize);
+        const footprint = Math.max(meshSize.x, meshSize.z, 0.001);
+        if (meshSize.y < footprint * 0.08 && footprint > 4) return;
+
+        if (initialized) {
+          worldBox.union(meshBox);
+        } else {
+          worldBox.copy(meshBox);
+          initialized = true;
+        }
+      });
+
+      if (!initialized) {
+        worldBox.setFromObject(target);
+      }
+
+      return out.set(
+        (worldBox.min.x + worldBox.max.x) * 0.5,
+        worldBox.min.y,
+        (worldBox.min.z + worldBox.max.z) * 0.5
+      );
+    }
+
+    function getTargetHoverLayout(target) {
+      const box = getLocalTargetBounds(target);
       const size = new THREE.Vector3();
-      const center = new THREE.Vector3();
       box.getSize(size);
-      box.getCenter(center);
 
-      const bottomCenter = new THREE.Vector3(center.x, box.min.y, center.z);
-      const localBottom = target.worldToLocal(bottomCenter.clone());
-      const footprint = Math.max(size.x, size.z);
-      const radius = footprint * 0.14;
+      const isFlying = normalizeFocusName(target.name).includes("flyingtaxi");
+      const footprint = Math.max(size.x, size.z, 0.001);
+      const radius = Math.min(footprint * (isFlying ? 0.48 : 0.58), isFlying ? 1.35 : 2.4);
 
       return {
-        position: localBottom,
-        radii: [radius * 0.45, radius * 0.72, radius * 1],
-        lift: Math.max(size.y * 0.01, 0.08),
+        ringInner: radius * 0.82,
+        ringOuter: radius,
+        lift: isFlying ? 0.04 : 0.035,
       };
+    }
+
+    function runHoverPulse(ringRef, tweensRef) {
+      tweensRef.current.forEach((tween) => tween.kill());
+      tweensRef.current = [];
+
+      const ring = ringRef.current;
+      if (!ring) return;
+
+      ring.scale.set(0.55, 0.55, 0.55);
+      ring.material.opacity = 0.3;
+
+      tweensRef.current.push(
+        gsap.to(ring.scale, {
+          x: 1.35,
+          y: 1.35,
+          z: 1.35,
+          duration: 0.7,
+          ease: "power2.out",
+        })
+      );
+      tweensRef.current.push(
+        gsap.to(ring.material, {
+          opacity: 0,
+          duration: 0.7,
+          ease: "power2.out",
+        })
+      );
     }
 
     function ClickableHoverIndicator({ target }) {
       const groupRef = useRef(null);
-      const circleRefs = useRef([]);
+      const ringRef = useRef(null);
       const tweensRef = useRef([]);
+      const worldBottom = useRef(new THREE.Vector3());
       const layout = useMemo(() => getTargetHoverLayout(target), [target]);
 
-      useEffect(() => {
+      useLayoutEffect(() => {
         const group = groupRef.current;
-        if (!group || !target) return;
+        if (!group) return;
 
-        target.add(group);
         group.userData.isHoverIndicator = true;
-        group.position.set(
-          layout.position.x,
-          layout.position.y + layout.lift,
-          layout.position.z
-        );
+        group.traverse((child) => {
+          child.userData.isHoverIndicator = true;
+          if (child.isMesh) child.raycast = () => {};
+        });
 
-
-        
-        runHoverCircleIntro(circleRefs, tweensRef);
+        runHoverPulse(ringRef, tweensRef);
 
         return () => {
           tweensRef.current.forEach((tween) => tween.kill());
           tweensRef.current = [];
-          if (group.parent === target) {
-            target.remove(group);
-          }
         };
       }, [layout, target]);
 
+      useFrame(() => {
+        const group = groupRef.current;
+        if (!group?.parent || !target) return;
+
+        getWorldBottomCenter(target, worldBottom.current);
+        group.parent.worldToLocal(worldBottom.current);
+        group.position.set(
+          worldBottom.current.x,
+          worldBottom.current.y + layout.lift,
+          worldBottom.current.z
+        );
+        group.quaternion.identity();
+      });
+
       return (
         <group ref={groupRef}>
-          {layout.radii.map((radius, index) => (
-            <mesh
-              key={`${target.uuid}-${index}`}
-              ref={(element) => {
-                circleRefs.current[index] = element;
-              }}
-              rotation={[-Math.PI / 2, 0, 0]}
-              renderOrder={10}
-            >
-              <circleGeometry args={[radius, 56]} />
-              <meshBasicMaterial
-                color="#000000"
-                transparent
-                opacity={0}
-                depthWrite={false}
-                side={THREE.DoubleSide}
-              />
-            </mesh>
-          ))}
+          <mesh
+            ref={ringRef}
+            rotation={[-Math.PI / 2, 0, 0]}
+            renderOrder={2}
+          >
+            <ringGeometry args={[layout.ringInner, layout.ringOuter, 64]} />
+            <meshBasicMaterial
+              color="#2e7fd1"
+              transparent
+              opacity={0}
+              toneMapped={false}
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-2}
+              polygonOffsetUnits={-2}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
         </group>
       );
     }
 
     function DeferredEnvironment() {
-      const [ready, setReady] = useState(false);
+      return (
+        <Environment
+          preset="city"
+          background
+          backgroundBlurriness={0.5}
+          environmentIntensity={0.32}
+        />
+      );
+    }
+    function findLocatorByName(root, locatorName) {
+      const wanted = normalizeFocusName(locatorName);
+      let found = null;
+      root.traverse((child) => {
+        if (found || !child.name) return;
+        if (normalizeFocusName(child.name) === wanted) found = child;
+      });
+      return found;
+    }
+
+    function hideVehicleLocator(locator) {
+      locator.userData.isVehicleLocator = true;
+      locator.traverse((child) => {
+        child.visible = false;
+        if (!child.isMesh) return;
+        child.castShadow = false;
+        child.receiveShadow = false;
+        child.raycast = () => {};
+      });
+    }
+
+    function SpawnedVehicle({
+      cityScene,
+      locator,
+      src,
+      targetLength,
+      yawOffset = 0,
+      positionOffset = [0, 0, 0],
+      paused,
+    }) {
+      const { scene, animations } = useGLTF(src);
+      const groupRef = useRef(null);
+      const model = useMemo(() => {
+        const clone = scene.clone(true);
+        clone.traverse((child) => {
+          if (!child.isMesh) return;
+          child.castShadow = true;
+          child.receiveShadow = false;
+        });
+        return clone;
+      }, [scene]);
+      const { actions, names, mixer } = useAnimations(animations, model);
+
+      useLayoutEffect(() => {
+        const marker = findLocatorByName(cityScene, locator);
+        const group = groupRef.current;
+        if (!marker || !group?.parent) return;
+
+        hideVehicleLocator(marker);
+        marker.updateWorldMatrix(true, false);
+        group.parent.updateWorldMatrix(true, false);
+
+        const worldPos = new THREE.Vector3();
+        const worldQuat = new THREE.Quaternion();
+        marker.getWorldPosition(worldPos);
+        marker.getWorldQuaternion(worldQuat);
+        group.parent.worldToLocal(worldPos);
+        group.position.copy(worldPos);
+        group.quaternion.copy(worldQuat);
+        group.scale.set(1, 1, 1);
+        group.translateX(positionOffset[0]);
+        group.translateY(positionOffset[1]);
+        group.translateZ(positionOffset[2]);
+        if (yawOffset) {
+          group.rotateY(THREE.MathUtils.degToRad(yawOffset));
+        }
+
+        model.position.set(0, 0, 0);
+        model.rotation.set(0, 0, 0);
+        model.scale.set(1, 1, 1);
+        model.updateMatrixWorld(true);
+
+        const size = new THREE.Vector3();
+        const box = new THREE.Box3().setFromObject(model);
+        box.getSize(size);
+        const worldScale = new THREE.Vector3();
+        group.getWorldScale(worldScale);
+        const localFootprint = Math.max(
+          size.x / Math.max(Math.abs(worldScale.x), 1e-6),
+          size.z / Math.max(Math.abs(worldScale.z), 1e-6),
+          1e-6
+        );
+        model.scale.setScalar(targetLength / localFootprint);
+        model.updateMatrixWorld(true);
+
+        const fitted = new THREE.Box3().setFromObject(model);
+        const groupWorld = new THREE.Vector3();
+        group.getWorldPosition(groupWorld);
+        const minLocalY = (fitted.min.y - groupWorld.y) / Math.max(Math.abs(worldScale.y), 1e-6);
+        model.position.y += -Math.abs(marker.scale.y) * 0.5 - minLocalY;
+      }, [cityScene, locator, model, targetLength, yawOffset, positionOffset]);
 
       useEffect(() => {
-        setReady(true);
-      }, []);
+        if (!names.length) return undefined;
 
-      if (!ready) return null;
+        names.forEach((name) => {
+          const action = actions[name];
+          if (!action) return;
+          action.reset();
+          action.setLoop(THREE.LoopRepeat, Infinity);
+          action.enabled = true;
+          action.play();
+        });
 
-      return <Environment preset="city" environmentIntensity={0.35} frames={1} />;
+        return () => {
+          names.forEach((name) => actions[name]?.stop());
+        };
+      }, [actions, names]);
+
+      useEffect(() => {
+        if (!mixer) return;
+        mixer.timeScale = paused ? 0 : CITY_ANIMATION_TIME_SCALE;
+      }, [mixer, paused]);
+
+      return (
+        <group ref={groupRef} name={locator} userData={{ isSpawnedVehicle: true }}>
+          <primitive object={model} />
+        </group>
+      );
+    }
+
+    function SpawnedCityVehicles({ cityScene, focusedCar, hoveredTarget }) {
+      const pauseSelfDriving = isSelfDrivingTaxi(hoveredTarget?.name);
+
+      return VEHICLE_SPOTS.map((spot) => (
+        <SpawnedVehicle
+          key={spot.locator}
+          cityScene={cityScene}
+          locator={spot.locator}
+          src={spot.src}
+          targetLength={spot.targetLength}
+          yawOffset={spot.yawOffset}
+          positionOffset={spot.positionOffset}
+          paused={
+            !!focusedCar ||
+            (spot.locator === "Selfdriving Taxi" && pauseSelfDriving)
+          }
+        />
+      ));
     }
 
     function CityModel({ focusedCar, onCarFocus }) {
-      const { scene, animations } = useGLTF("/models/city-2.glb");
+      const { scene, animations } = useGLTF("/models/city2.glb");
       const controlsRef = useRef(null);
       const { camera, gl } = useThree();
       const [hoveredCar, setHoveredCar] = useState(false);
@@ -1157,17 +1415,24 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         camera.position.set(...startingPosition);
         camera.near = near;
         camera.far = far;
-        camera.lookAt(...target);
+        camera.lookAt(...START_CAMERA_TARGET);
         camera.updateProjectionMatrix();
 
         if (controlsRef.current) {
-          controlsRef.current.target.set(...target);
+          controlsRef.current.target.set(...START_CAMERA_TARGET);
           controlsRef.current.update();
         }
       }, [camera, cameraPosition, far, near, target]);
 
       useEffect(() => {
-        analyzeScenePerformance(scene, animations, "city-2.glb");
+        VEHICLE_SPOTS.forEach((spot) => {
+          const marker = findLocatorByName(scene, spot.locator);
+          if (marker) hideVehicleLocator(marker);
+        });
+      }, [scene]);
+
+      useEffect(() => {
+        analyzeScenePerformance(scene, animations, "city2.glb");
 
         const meshNames = [];
         const objectNames = [];
@@ -1179,7 +1444,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         });
 
         console.groupCollapsed(
-          `%c[Meshes] city-2.glb — ${meshNames.length} meshes`,
+          `%c[Meshes] city2.glb — ${meshNames.length} meshes`,
           "color:#34d399;font-weight:bold"
         );
         console.table(meshNames.map((name, i) => ({ index: i + 1, name })));
@@ -1205,6 +1470,9 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
 
         scene.traverse((child) => {
           if (!child.isMesh) return;
+          if (child.userData.isVehicleLocator || child.parent?.userData?.isVehicleLocator) {
+            return;
+          }
 
           child.castShadow = true;
           child.receiveShadow = false;
@@ -1230,6 +1498,19 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
               texture.minFilter = THREE.LinearMipmapLinearFilter;
               texture.magFilter = THREE.LinearFilter;
             });
+
+            if (material.isMeshStandardMaterial || material.isMeshPhysicalMaterial) {
+              if (!material.map && material.roughness < 0.45) {
+                material.roughness = 0.72;
+              }
+              if (!material.metalnessMap && material.metalness > 0.25) {
+                const lightness = material.color.getHSL({ h: 0, s: 0, l: 0 }).l;
+                if (lightness > 0.35) {
+                  material.metalness = 0.06;
+                }
+              }
+              material.envMapIntensity = material.map ? 1 : 0.7;
+            }
           });
         });
       }, [gl, scene]);
@@ -1239,14 +1520,14 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
           names.forEach((name) => actions[name]?.stop());
           if (mixer) mixer.timeScale = 0;
           if (PERF_LOG_ENABLED) {
-            console.log("%c[Perf] Animations disabled for city-2.glb", "color:#94a3b8");
+            console.log("%c[Perf] Animations disabled for city2.glb", "color:#94a3b8");
           }
           return;
         }
 
         if (!names.length) {
           if (PERF_LOG_ENABLED) {
-            console.log("%c[Perf] No animation clips on city-2.glb", "color:#94a3b8");
+            console.log("%c[Perf] No animation clips on city2.glb", "color:#94a3b8");
           }
           return;
         }
@@ -1282,9 +1563,9 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
           return;
         }
 
-        mixer.timeScale = hoveredCar ? 0 : CITY_ANIMATION_TIME_SCALE;
+        mixer.timeScale = CITY_ANIMATION_TIME_SCALE;
 
-        if (!hoveredCar) {
+        if (!focusedCar) {
           names.forEach((name) => {
             const action = actions[name];
             if (action && !action.isRunning()) {
@@ -1292,7 +1573,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
             }
           });
         }
-      }, [actions, focusedCar, hoveredCar, mixer, names]);
+      }, [actions, focusedCar, mixer, names]);
 
       const handleCarPointerOver = useCallback(
         (event) => {
@@ -1338,7 +1619,6 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
       );
 
       const defaultCameraPosition = START_CAMERA_POSITION ?? cameraPosition;
-      const controlsTarget = focusedCar ? carFocusFrame.target.toArray() : target;
       const controlsMinDistance = focusedCar ? carFocusFrame.minDistance : minDistance;
       const controlsMaxDistance = focusedCar ? carFocusFrame.maxDistance : maxDistance;
 
@@ -1346,26 +1626,35 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
         <>
           {!focusedCar && (
             <>
-              <ambientLight intensity={0.45} color="#a8a8a8" />
-              <hemisphereLight intensity={0.55} color="#b8b8b8" groundColor="#6b6b6b" />
+              <ambientLight intensity={0.32} color="#c8c4dc" />
+              <hemisphereLight intensity={0.42} color="#d4ccec" groundColor="#9a96a8" />
               <DirectionalShadowLight target={target} radius={radius} />
-              <directionalLight position={[-radius, radius * 1.2, -radius]} intensity={0.35} color="#9a9a9a" />
+              <directionalLight
+                position={[target[0] + radius * 0.9, target[1] + radius * 1.1, target[2] + radius * 1.05]}
+                intensity={0.48}
+                color="#d0c8ea"
+              />
               <DeferredEnvironment />
             </>
           )}
-          <group visible={!focusedCar} position={fitPosition} scale={fitScale}>
-            <primitive
-              object={scene}
-              onPointerOver={handleCarPointerOver}
-              onPointerOut={handleCarPointerOut}
-              onClick={handleCarClick}
-            />
+          <group
+            visible={!focusedCar}
+            position={fitPosition}
+            scale={fitScale}
+            onPointerOver={handleCarPointerOver}
+            onPointerOut={handleCarPointerOut}
+            onClick={handleCarClick}
+          >
+            <primitive object={scene} />
+            <Suspense fallback={null}>
+              <SpawnedCityVehicles
+                cityScene={scene}
+                focusedCar={focusedCar}
+                hoveredTarget={hoveredTarget}
+              />
+            </Suspense>
             {!focusedCar && hoveredTarget && shouldShowHoverIndicator(hoveredTarget.name) && (
-              normalizeFocusName(hoveredTarget.name).includes("dubaibus") ? (
-                <BusHoverIndicator target={hoveredTarget} fitScale={fitScale} />
-              ) : (
-                <ClickableHoverIndicator target={hoveredTarget} />
-              )
+              <ClickableHoverIndicator target={hoveredTarget} />
             )}
           </group>
           {focusedCar && <FocusedCarView car={focusedCar} />}
@@ -1373,17 +1662,18 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
             focusedCar={focusedCar}
             controlsRef={controlsRef}
             defaultCameraPosition={defaultCameraPosition}
-            defaultTarget={target}
+            defaultTarget={START_CAMERA_TARGET}
           />
           <RuntimePerfProbe />
+          <CameraCredentialsLog controlsRef={controlsRef} />
           <OrbitControls
             ref={controlsRef}
-            enableRotate
-            enableZoom
-            enablePan={!focusedCar}
-            enableDamping
+            enabled={!!focusedCar}
+            enableRotate={!!focusedCar}
+            enableZoom={!!focusedCar}
+            enablePan={false}
+            enableDamping={!!focusedCar}
             dampingFactor={0.08}
-            target={controlsTarget}
             minDistance={controlsMinDistance}
             maxDistance={controlsMaxDistance}
           />
@@ -1453,7 +1743,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
           style={{
             background: focusTheme
               ? focusTheme.backgroundColor
-              : "radial-gradient(circle at center, #6a6a6a 0%, #3d3d3d 45%, #141414 75%, #000000 100%)",
+              : "radial-gradient(ellipse at 18% 0%, #f2f2f2 0%, #8d8d8d 24%, #5c5c5c 52%, #3a3a3a 100%)",
           }}
         >
           {loaderVisible && (
@@ -1470,10 +1760,12 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
               antialias: true,
               alpha: true,
               powerPreference: "high-performance",
+              toneMapping: THREE.ACESFilmicToneMapping,
+              toneMappingExposure: 1,
             }}
             dpr={[1, 1.5]}
             shadows="percentage"
-            camera={{ position: [10, 5, 14], fov: 50, near: 0.1, far: 2000 }}
+            camera={{ position: START_CAMERA_POSITION, fov: 50, near: 0.1, far: 2000 }}
           >
             <AdaptiveDpr pixelated />
             <RenderQuality focusTheme={focusTheme} />
@@ -1514,7 +1806,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
           </p>
         </div>
 
-        <button
+        <button  
           type="button"
           onClick={onClose}
           aria-label="Close car view"
@@ -1539,4 +1831,5 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
     );
   }
 
-  useGLTF.preload("/models/city-2.glb");
+  useGLTF.preload("/models/city2.glb");
+  VEHICLE_SPOTS.forEach((spot) => useGLTF.preload(spot.src));
