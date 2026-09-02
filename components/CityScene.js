@@ -25,7 +25,7 @@
     const CAMERA_PEEK = {
       maxYaw: THREE.MathUtils.degToRad(10),
       maxPitch: THREE.MathUtils.degToRad(8),
-      smooth: 1.8,
+      smooth: 2,
     };
     const WORLD_UP = new THREE.Vector3(0, 1, 0);
     const CAR_FOCUS_THEMES = {
@@ -1217,10 +1217,10 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
     function DeferredEnvironment() {
       return (
         <Environment
-          preset="city"
+          preset="sunset"
           background
           backgroundBlurriness={0.5}
-          environmentIntensity={0.32}
+          environmentIntensity={0.42}
         />
       );
     }
