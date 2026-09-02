@@ -43,6 +43,12 @@
       },
     };
 
+    const MODEL_CACHE_VERSION = "20260902";
+
+    function modelUrl(path) {
+      return `${path}?v=${MODEL_CACHE_VERSION}`;
+    }
+
     const CAR_NAME_PATTERN = /^Car\d+/;
     const CARS_COLLECTION_PATTERN = /^Cars$/i;
 
@@ -50,55 +56,55 @@
     const VEHICLE_SPOTS = [
       {
         locator: "White Sedan",
-        src: "/models/optimized-models/White Sedan-optimized.glb",
+        src: modelUrl("/models/optimized-models/White Sedan-optimized.glb"),
         targetLength: 2.5,
         yawOffset: 180,
       },
       {
         locator: "Dubai Taxi",
-        src: "/models/optimized-models/Red Taxi-optimized.glb",
+        src: modelUrl("/models/optimized-models/Red Taxi-optimized.glb"),
         targetLength: 2.5,
         yawOffset: 180,
       },
       {
         locator: "Black SUV",
-        src: "/models/optimized-models/BIg SUV Black-optimized.glb",
+        src: modelUrl("/models/optimized-models/BIg SUV Black-optimized.glb"),
         targetLength: 2.5,
       },
       {
         locator: "Dubai Bus",
-        src: "/models/optimized-models/Dubai Bus-optimized.glb",
+        src: modelUrl("/models/optimized-models/Dubai Bus-optimized.glb"),
         targetLength: 5,
       },
       {
         locator: "Selfdriving Taxi",
-        src: "/models/optimized-models/Self Driving Taxi-optimized.glb",
+        src: modelUrl("/models/optimized-models/Self Driving Taxi-optimized.glb"),
         targetLength: 2.5,
         yawOffset: -90,
         positionOffset: [30, 0, -2.6],
       },
       {
         locator: "Van",
-        src: "/models/optimized-models/White Van-optimized.glb",
+        src: modelUrl("/models/optimized-models/White Van-optimized.glb"),
         targetLength: 2.5,
         yawOffset: 180,
       },
       {
         locator: "Flying Taxi",
-        src: "/models/optimized-models/Flying Taxi1-optimized.glb",
+        src: modelUrl("/models/optimized-models/Flying Taxi1-optimized.glb"),
         targetLength: 3,
         yawOffset: 50,
       },
       {
         locator: "Dubai Metro",
-        src: "/models/optimized-models/Dubai Metro-optimized.glb",
+        src: modelUrl("/models/optimized-models/Dubai Metro-optimized.glb"),
         targetLength: 25,
         yawOffset: 90,
         positionOffset: [-15, 0, 0.2],
       },
       {
         locator: "Etihad Rail",
-        src: "/models/optimized-models/Etihad Rail-optimized.glb",
+        src: modelUrl("/models/optimized-models/Etihad Rail-optimized.glb"),
         targetLength: 25,
         positionOffset: [10, 0, 0],
       },
@@ -1229,9 +1235,42 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
       let found = null;
       root.traverse((child) => {
         if (found || !child.name) return;
-        if (normalizeFocusName(child.name) === wanted) found = child;
+        const normalized = normalizeFocusName(child.name);
+        if (normalized === wanted || normalized.startsWith(wanted)) found = child;
       });
       return found;
+    }
+
+    function getLocalFootprint(object) {
+      object.updateMatrixWorld(true);
+      const inverse = new THREE.Matrix4().copy(object.matrixWorld).invert();
+      const box = new THREE.Box3();
+      const meshBox = new THREE.Box3();
+      let initialized = false;
+
+      object.traverse((child) => {
+        if (!child.isMesh || !child.geometry) return;
+        if (!child.geometry.boundingBox) child.geometry.computeBoundingBox();
+        if (!child.geometry.boundingBox) return;
+        meshBox.copy(child.geometry.boundingBox);
+        meshBox.applyMatrix4(child.matrixWorld);
+        meshBox.applyMatrix4(inverse);
+        if (initialized) {
+          box.union(meshBox);
+        } else {
+          box.copy(meshBox);
+          initialized = true;
+        }
+      });
+
+      if (!initialized) {
+        box.setFromObject(object);
+        box.applyMatrix4(inverse);
+      }
+
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      return Math.max(size.x, size.z, 1e-6);
     }
 
     function hideVehicleLocator(locator) {
@@ -1268,47 +1307,42 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
       const { actions, names, mixer } = useAnimations(animations, model);
 
       useLayoutEffect(() => {
-        const marker = findLocatorByName(cityScene, locator);
         const group = groupRef.current;
-        if (!marker || !group?.parent) return;
+        if (!group) return;
 
-        hideVehicleLocator(marker);
-        marker.updateWorldMatrix(true, false);
-        group.parent.updateWorldMatrix(true, false);
+        const marker = findLocatorByName(cityScene, locator);
+        if (marker && group.parent) {
+          hideVehicleLocator(marker);
+          marker.updateWorldMatrix(true, false);
+          group.parent.updateWorldMatrix(true, false);
 
-        const worldPos = new THREE.Vector3();
-        const worldQuat = new THREE.Quaternion();
-        marker.getWorldPosition(worldPos);
-        marker.getWorldQuaternion(worldQuat);
-        group.parent.worldToLocal(worldPos);
-        group.position.copy(worldPos);
-        group.quaternion.copy(worldQuat);
-        group.scale.set(1, 1, 1);
-        group.translateX(positionOffset[0]);
-        group.translateY(positionOffset[1]);
-        group.translateZ(positionOffset[2]);
-        if (yawOffset) {
-          group.rotateY(THREE.MathUtils.degToRad(yawOffset));
+          const worldPos = new THREE.Vector3();
+          const worldQuat = new THREE.Quaternion();
+          marker.getWorldPosition(worldPos);
+          marker.getWorldQuaternion(worldQuat);
+          group.parent.worldToLocal(worldPos);
+          group.position.copy(worldPos);
+          group.quaternion.copy(worldQuat);
+          group.scale.set(1, 1, 1);
+          group.translateX(positionOffset[0]);
+          group.translateY(positionOffset[1]);
+          group.translateZ(positionOffset[2]);
+          if (yawOffset) {
+            group.rotateY(THREE.MathUtils.degToRad(yawOffset));
+          }
         }
 
         model.position.set(0, 0, 0);
         model.rotation.set(0, 0, 0);
         model.scale.set(1, 1, 1);
         model.updateMatrixWorld(true);
-
-        const size = new THREE.Vector3();
-        const box = new THREE.Box3().setFromObject(model);
-        box.getSize(size);
-        const worldScale = new THREE.Vector3();
-        group.getWorldScale(worldScale);
-        const localFootprint = Math.max(
-          size.x / Math.max(Math.abs(worldScale.x), 1e-6),
-          size.z / Math.max(Math.abs(worldScale.z), 1e-6),
-          1e-6
-        );
-        model.scale.setScalar(targetLength / localFootprint);
+        model.scale.setScalar(targetLength / getLocalFootprint(model));
         model.updateMatrixWorld(true);
 
+        if (!marker) return;
+
+        const worldScale = new THREE.Vector3();
+        group.getWorldScale(worldScale);
         const fitted = new THREE.Box3().setFromObject(model);
         const groupWorld = new THREE.Vector3();
         group.getWorldPosition(groupWorld);
@@ -1366,7 +1400,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
     }
 
     function CityModel({ focusedCar, onCarFocus }) {
-      const { scene, animations } = useGLTF("/models/city2.glb");
+      const { scene, animations } = useGLTF(modelUrl("/models/city2.glb"));
       const controlsRef = useRef(null);
       const { camera, gl } = useThree();
       const [hoveredCar, setHoveredCar] = useState(false);
@@ -1831,5 +1865,5 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
     );
   }
 
-  useGLTF.preload("/models/city2.glb");
+  useGLTF.preload(modelUrl("/models/city2.glb"));
   VEHICLE_SPOTS.forEach((spot) => useGLTF.preload(spot.src));
