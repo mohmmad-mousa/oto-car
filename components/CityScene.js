@@ -549,18 +549,18 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
       const zoomIn = isLargeTransitFocus(car.name);
 
       const cameraDistance = zoomIn ? 0.5 : 1;
-      const minDistanceScale = zoomIn ? 0.2 : 0.38;
-      const maxDistanceScale = zoomIn ? 2.5 : 5;
+      const cameraPosition = new THREE.Vector3(
+        carSize * 1.55 * cameraDistance,
+        carSize * 0.95 * cameraDistance,
+        carSize * 1.95 * cameraDistance
+      );
+      const lockedDistance = cameraPosition.length();
 
       return {
         carSize,
-        minDistance: Math.max(0.12, carSize * minDistanceScale),
-        maxDistance: Math.max(4, carSize * maxDistanceScale),
-        cameraPosition: new THREE.Vector3(
-          carSize * 1.55 * cameraDistance,
-          carSize * 0.95 * cameraDistance,
-          carSize * 1.95 * cameraDistance
-        ),
+        minDistance: lockedDistance,
+        maxDistance: lockedDistance,
+        cameraPosition,
         target: new THREE.Vector3(0, 0, 0),
       };
     }
@@ -1704,7 +1704,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
             ref={controlsRef}
             enabled={!!focusedCar}
             enableRotate={!!focusedCar}
-            enableZoom={!!focusedCar}
+            enableZoom={false}
             enablePan={false}
             enableDamping={!!focusedCar}
             dampingFactor={0.08}
@@ -1816,25 +1816,34 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
 
   function CarFocusOverlay({ theme, onClose }) {
     return (
-      <div className={`${focusFont.className} pointer-events-none absolute inset-0 z-10`}>
+      <div className={`${focusFont.className} pointer-events-none absolute inset-0 z-10 overflow-hidden`}>
         <p
-          className="absolute top-0 right-10 mt-20 max-w-md text-left text-2xl font-light leading-relaxed md:right-24 md:max-w-xl md:text-3xl lg:max-w-xl lg:text-3xl"
-          style={{ color: `${theme.uiText}d9` }}
+          className="absolute top-[6%] right-[5%] w-[min(42vw,28rem)] text-left font-light leading-relaxed sm:right-[8%] sm:top-[8%]"
+          style={{
+            color: `${theme.uiText}d9`,
+            fontSize: "clamp(0.72rem, 2.05vw, 1.65rem)",
+          }}
         >
           Premium rides in high-end cars. When you want a low-cost ride with an added
           touch of luxury, OTO CAR is the option for you.
         </p>
 
-        <div className="absolute bottom-12 left-10 mb-60 md:bottom-16 md:left-14">
+        <div className="absolute bottom-[22%] left-[5%] sm:bottom-[18%] sm:left-[6%]">
           <p
-            className="text-[clamp(3.75rem,12vw,7.5rem)] font-medium leading-[0.92] tracking-[-0.03em]"
-            style={{ color: theme.accentText }}
+            className="font-medium leading-[0.92] tracking-[-0.03em]"
+            style={{
+              color: theme.accentText,
+              fontSize: "clamp(1.6rem, 8.5vw, 7.5rem)",
+            }}
           >
             OTO CAR
           </p>
           <p
-            className="text-[clamp(3.75rem,12vw,7.5rem)] font-medium leading-[0.92] tracking-[-0.03em]"
-            style={{ color: theme.accentText }}
+            className="font-medium leading-[0.92] tracking-[-0.03em]"
+            style={{
+              color: theme.accentText,
+              fontSize: "clamp(1.6rem, 8.5vw, 7.5rem)",
+            }}
           >
             Select
           </p>
@@ -1844,7 +1853,7 @@ const CITY_ANIMATION_TIME_SCALE = 0.5;
           type="button"
           onClick={onClose}
           aria-label="Close car view"
-          className="pointer-events-auto absolute bottom-8 left-1/2 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border transition"
+          className="pointer-events-auto absolute bottom-[4%] left-1/2 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border transition sm:bottom-8 sm:h-9 sm:w-9"
           style={{
             borderColor: `${theme.uiText}59`,
             color: `${theme.uiText}cc`,
